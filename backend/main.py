@@ -1,10 +1,18 @@
-from fastapi import FastAPI
+# Triggering hot reload
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from typing import List, Dict
+from typing import List, Dict, Optional, Any
 import math
+import httpx
+from sqlalchemy.orm import Session
+from backend import models
+from backend.database import engine, get_db
+
+# Create DB schemas
+models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Clarke-Wright VRP Solver")
 
@@ -196,9 +204,53 @@ def clarke_wright_algorithm(nodes: List[Node], depot_id: int, capacity: float):
         steps=steps
     )
 
+@app.post("/api/solve/clarke-wright", response_model=VRPResponse)
 @app.post("/solve", response_model=VRPResponse)
 async def solve_vrp(request: VRPRequest):
     return clarke_wright_algorithm(request.nodes, request.depot_id, request.vehicle_capacity)
+
+@app.post("/api/solve/cplex")
+async def solve_cplex(request: VRPRequest):
+    # This acts as a wrapper requesting the Java Spring Boot service
+    # Assuming the Java service will run on localhost:8080
+    JAVA_BACKEND_URL = "http://localhost:8080/solve"
+    try:
+        async with httpx.AsyncClient() as client:
+            # We forward the payload directly to the Java backend
+            response = await client.post(JAVA_BACKEND_URL, json=request.dict(), timeout=60.0)
+            response.raise_for_status()
+            return response.json()
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=503, detail=f"Java CPLEX solver unavailable: {str(exc)}")
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail="Error from Java Solver")
+
+class SaveResultRequest(BaseModel):
+    scenario_name: str
+    algorithm: str
+    vehicle_capacity: float
+    total_distance: float
+    num_vehicles: int
+    routes: Any
+
+@app.post("/api/results/save")
+async def save_result(result: SaveResultRequest, db: Session = Depends(get_db)):
+    db_result = models.ScenarioResult(
+        scenario_name=result.scenario_name,
+        algorithm=result.algorithm,
+        vehicle_capacity=result.vehicle_capacity,
+        total_distance=result.total_distance,
+        num_vehicles=result.num_vehicles,
+        routes=result.routes
+    )
+    db.add(db_result)
+    db.commit()
+    db.refresh(db_result)
+    return {"status": "success", "id": db_result.id}
+
+@app.get("/api/results")
+async def get_results(db: Session = Depends(get_db)):
+    return db.query(models.ScenarioResult).order_by(models.ScenarioResult.created_at.desc()).all()
 
 @app.get("/")
 async def root():
