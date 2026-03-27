@@ -92,6 +92,29 @@ function setupEventListeners() {
     document.getElementById('clearBtn').addEventListener('click', clearAll);
     document.getElementById('solveBtn').addEventListener('click', solveProblem);
 
+    const importCsvBtn = document.getElementById('importCsvBtn');
+    const csvImportInput = document.getElementById('csvImportInput');
+    if (importCsvBtn && csvImportInput) {
+        importCsvBtn.addEventListener('click', function() {
+            csvImportInput.click();
+        });
+        csvImportInput.addEventListener('change', function(e) {
+            const file = e.target.files && e.target.files[0];
+            e.target.value = '';
+            if (!file) {
+                return;
+            }
+            const reader = new FileReader();
+            reader.onload = function() {
+                importFromCsvText(reader.result);
+            };
+            reader.onerror = function() {
+                updateStatus('Could not read CSV file.');
+            };
+            reader.readAsText(file, 'UTF-8');
+        });
+    }
+
     map.on('click', function(e) {
         handleMapClick(e.latlng);
     });
@@ -120,6 +143,113 @@ function handleMapClick(latlng) {
     } else if (mode === 'addCustomer') {
         addCustomer(latlng);
     }
+}
+
+function stripVrpCsv(text) {
+    if (!text || typeof text !== 'string') {
+        return '';
+    }
+    let t = text;
+    if (t.charCodeAt(0) === 0xfeff) {
+        t = t.slice(1);
+    }
+    return t.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+}
+
+function splitCsvLines(text) {
+    return text.split('\n').map(function(l) {
+        return l.trim();
+    }).filter(function(l) {
+        return l.length > 0;
+    });
+}
+
+function parseRowCells(line) {
+    return line.split(',').map(function(s) {
+        return s.trim();
+    });
+}
+
+function parseVrpCsv(text) {
+    const raw = stripVrpCsv(text);
+    if (!raw) {
+        return { error: 'CSV is empty.' };
+    }
+    const lines = splitCsvLines(raw);
+    if (lines.length < 2) {
+        return { error: 'CSV must have a depot row (lat, lng) and at least one customer row (lat, lng, demand).' };
+    }
+
+    const depotCells = parseRowCells(lines[0]);
+    if (depotCells.length !== 2) {
+        return { error: 'Row 1 (depot) must have exactly 2 columns: lat, lng.' };
+    }
+    const depotLat = parseFloat(depotCells[0]);
+    const depotLng = parseFloat(depotCells[1]);
+    if (!Number.isFinite(depotLat) || !Number.isFinite(depotLng)) {
+        return { error: 'Row 1 (depot): lat and lng must be valid numbers.' };
+    }
+    if (depotLat < -90 || depotLat > 90 || depotLng < -180 || depotLng > 180) {
+        return { error: 'Row 1 (depot): lat must be between -90 and 90, lng between -180 and 180.' };
+    }
+
+    const customerRows = [];
+    for (let i = 1; i < lines.length; i++) {
+        const cells = parseRowCells(lines[i]);
+        if (cells.length !== 3) {
+            return { error: 'Row ' + (i + 1) + ' must have exactly 3 columns: lat, lng, demand.' };
+        }
+        const clat = parseFloat(cells[0]);
+        const clng = parseFloat(cells[1]);
+        const demand = parseFloat(cells[2]);
+        if (!Number.isFinite(clat) || !Number.isFinite(clng) || !Number.isFinite(demand)) {
+            return { error: 'Row ' + (i + 1) + ': lat, lng, and demand must be valid numbers.' };
+        }
+        if (clat < -90 || clat > 90 || clng < -180 || clng > 180) {
+            return { error: 'Row ' + (i + 1) + ': lat must be between -90 and 90, lng between -180 and 180.' };
+        }
+        if (demand < 0) {
+            return { error: 'Row ' + (i + 1) + ': demand cannot be negative.' };
+        }
+        customerRows.push({ lat: clat, lng: clng, demand: demand });
+    }
+
+    return {
+        depot: { lat: depotLat, lng: depotLng },
+        customers: customerRows
+    };
+}
+
+function fitMapToImportedNodes() {
+    if (!map || !depot) {
+        return;
+    }
+    const bounds = L.latLngBounds([depot.lat, depot.lng]);
+    customers.forEach(function(c) {
+        bounds.extend([c.lat, c.lng]);
+    });
+    try {
+        map.fitBounds(bounds, { padding: [48, 48], maxZoom: 15 });
+    } catch (err) {
+        map.setView([depot.lat, depot.lng], 13);
+    }
+}
+
+function importFromCsvText(text) {
+    const parsed = parseVrpCsv(text);
+    if (parsed.error) {
+        updateStatus('CSV error: ' + parsed.error);
+        return;
+    }
+    clearAll();
+    setDepot(L.latLng(parsed.depot.lat, parsed.depot.lng));
+    for (let j = 0; j < parsed.customers.length; j++) {
+        const row = parsed.customers[j];
+        addCustomerWithDemand(L.latLng(row.lat, row.lng), row.demand, { silent: true });
+    }
+    fitMapToImportedNodes();
+    mode = 'idle';
+    updateStatus('CSV import: loaded depot and ' + parsed.customers.length + ' customer(s).');
 }
 
 function setDepot(latlng) {
@@ -154,7 +284,15 @@ function setDepot(latlng) {
 }
 
 function addCustomer(latlng) {
-    const demand = parseInt(document.getElementById('defaultDemand').value) || 15;
+    const demand = parseInt(document.getElementById('defaultDemand').value, 10) || 15;
+    addCustomerWithDemand(latlng, demand);
+}
+
+function addCustomerWithDemand(latlng, demand, opts) {
+    const silent = opts && opts.silent;
+    if (!Number.isFinite(demand) || demand < 0) {
+        demand = 0;
+    }
 
     const marker = L.marker([latlng.lat, latlng.lng], {
         icon: L.divIcon({
@@ -179,7 +317,9 @@ function addCustomer(latlng) {
 
     customers.push(customer);
     updateNodesList();
-    updateStatus('Customer added! Add more or click Solve.');
+    if (!silent) {
+        updateStatus('Customer added! Add more or click Solve.');
+    }
 }
 
 function updateNodesList() {
@@ -207,6 +347,10 @@ function updateNodesList() {
     });
 
     nodesList.innerHTML = html || '<p class="placeholder-text">No nodes added yet</p>';
+    const nodeCountEl = document.getElementById('nodeCount');
+    if (nodeCountEl) {
+        nodeCountEl.textContent = String((depot ? 1 : 0) + customers.length);
+    }
     updateSolveButtonState();
 }
 

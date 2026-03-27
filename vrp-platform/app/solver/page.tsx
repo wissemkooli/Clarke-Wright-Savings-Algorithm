@@ -136,6 +136,20 @@ export default function SolverPage() {
                   <button id="clearBtn" className="btn btn-secondary" type="button">
                     Clear all
                   </button>
+                  <input
+                    id="csvImportInput"
+                    type="file"
+                    accept=".csv,text/csv,text/plain"
+                    className="hidden"
+                    tabIndex={-1}
+                  />
+                  <button
+                    id="importCsvBtn"
+                    className="btn btn-secondary"
+                    type="button"
+                  >
+                    Import CSV
+                  </button>
                 </div>
                 <div className="vrp-status">
                   <span className="vrp-status-label">Status</span>
