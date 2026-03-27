@@ -101,6 +101,16 @@ header p {
     transition: all 0.3s;
 }
 
+.btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.btn:disabled:hover {
+    transform: none;
+}
+
 .btn-primary {
     background: #667eea;
     color: white;

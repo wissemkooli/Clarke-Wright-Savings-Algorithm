@@ -25,6 +25,59 @@ function initMap() {
     console.log('Map initialized successfully!');
 }
 
+function getCapacityViolationMessage(customerList, capacity) {
+    if (!Number.isFinite(capacity) || capacity <= 0) {
+        return 'Enter a valid vehicle capacity greater than zero.';
+    }
+    const bad = customerList.filter(function(c) {
+        return c.demand > capacity;
+    });
+    if (bad.length === 0) {
+        return null;
+    }
+    if (bad.length === 1) {
+        const c = bad[0];
+        return 'Customer ' + c.id + ' has demand ' + c.demand + ' which exceeds vehicle capacity ' + capacity + '.';
+    }
+    return (
+        'The following customers exceed vehicle capacity (' + capacity + '): ' +
+        bad.map(function(c) {
+            return 'customer ' + c.id + ' (demand ' + c.demand + ')';
+        }).join(', ') +
+        '.'
+    );
+}
+
+function updateSolveButtonState() {
+    const btn = document.getElementById('solveBtn');
+    if (!btn) {
+        return;
+    }
+    const capacity = parseFloat(document.getElementById('capacity').value);
+    const violation = getCapacityViolationMessage(customers, capacity);
+    const badCapacity = !Number.isFinite(capacity) || capacity <= 0;
+    const capBlock = badCapacity || violation !== null;
+    const baseDisable = !depot || customers.length < 2 || isVisualizationRunning;
+    btn.disabled = baseDisable || capBlock;
+}
+
+async function parseErrorResponse(response) {
+    let msg = 'Server error: ' + response.status;
+    try {
+        const errBody = await response.json();
+        const d = errBody.detail;
+        if (typeof d === 'string') {
+            return d;
+        }
+        if (Array.isArray(d) && d.length && d[0].msg) {
+            return d.map(function(e) {
+                return e.msg;
+            }).join('; ');
+        }
+    } catch (_) {}
+    return msg;
+}
+
 function setupEventListeners() {
     document.getElementById('setDepotBtn').addEventListener('click', function() {
         mode = 'setDepot';
@@ -51,6 +104,14 @@ function setupEventListeners() {
             document.getElementById(e.target.dataset.tab + '-tab').classList.add('active');
         });
     });
+
+    const capInput = document.getElementById('capacity');
+    if (capInput) {
+        capInput.addEventListener('input', updateSolveButtonState);
+        capInput.addEventListener('change', updateSolveButtonState);
+    }
+
+    updateSolveButtonState();
 }
 
 function handleMapClick(latlng) {
@@ -146,6 +207,7 @@ function updateNodesList() {
     });
 
     nodesList.innerHTML = html || '<p class="placeholder-text">No nodes added yet</p>';
+    updateSolveButtonState();
 }
 
 function deleteCustomer(idx) {
@@ -199,6 +261,13 @@ async function solveProblem() {
 
     const capacity = parseFloat(document.getElementById('capacity').value);
 
+    const capViolation = getCapacityViolationMessage(customers, capacity);
+    if (capViolation) {
+        alert(capViolation);
+        updateStatus(capViolation);
+        return;
+    }
+
     // Show capacity info
     const totalDemand = customers.reduce((sum, c) => sum + c.demand, 0);
     console.log('Vehicle Capacity:', capacity);
@@ -227,6 +296,9 @@ async function solveProblem() {
     updateStatus('Solving... Capacity: ' + capacity + ' | Total Demand: ' + totalDemand);
 
     try {
+        isVisualizationRunning = true;
+        updateSolveButtonState();
+
         const response = await fetch(`${API_URL}/solve`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -238,7 +310,8 @@ async function solveProblem() {
         });
 
         if (!response.ok) {
-            throw new Error('Server error: ' + response.status);
+            const errMsg = await parseErrorResponse(response);
+            throw new Error(errMsg);
         }
 
         const data = await response.json();
@@ -252,16 +325,18 @@ async function solveProblem() {
 
         document.getElementById('resultsSection').style.display = 'block';
     } catch (error) {
-        alert('Error: ' + error.message);
+        const message = error && error.message ? error.message : String(error);
+        alert('Error: ' + message);
         console.error(error);
-        updateStatus('Error occurred. Check console.');
+        updateStatus(message);
+    } finally {
+        isVisualizationRunning = false;
+        updateSolveButtonState();
     }
 }
 
 // FASTER Visualization
 async function visualizeAlgorithmFast(data) {
-    isVisualizationRunning = true;
-
     // Clear old routes
     routeLines.forEach(line => map.removeLayer(line));
     routeLines = [];
@@ -290,7 +365,6 @@ async function visualizeAlgorithmFast(data) {
     // Display final results
     displayResults(data);
     updateStatus('✅ Solution complete! ' + data.routes.length + ' vehicles used.');
-    isVisualizationRunning = false;
 }
 
 // Draw a single route with capacity info

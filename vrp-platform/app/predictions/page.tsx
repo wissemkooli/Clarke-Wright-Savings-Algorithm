@@ -1,8 +1,18 @@
+export const metadata = {
+  title: "Predictions",
+};
+
 export default function PredictionsPage() {
   return (
-    <div className="min-h-screen p-8 bg-zinc-950 text-white">
-      <h1 className="text-4xl font-bold mb-4 bg-gradient-to-r from-emerald-400 to-teal-500 bg-clip-text text-transparent">ML Predictions</h1>
-      <p className="text-zinc-400">Machine learning model results and routing predictions.</p>
+    <div className="page-shell">
+      <h1>Predictions</h1>
+      <p className="lead">
+        Reserve this space for models that suggest demand, fleet sizing, or
+        route risk from historical data—keeping the same visual language as the
+        rest of the lab.
+      </p>
+      <div className="page-divider" />
+      <p className="lead">Connect your inference service when ready.</p>
     </div>
   );
 }

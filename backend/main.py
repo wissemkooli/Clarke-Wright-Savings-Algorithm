@@ -69,6 +69,22 @@ def clarke_wright_algorithm(nodes: List[Node], depot_id: int, capacity: float):
     depot = next(n for n in nodes if n.id == depot_id)
     customers = [n for n in nodes if n.id != depot_id]
 
+    violations = [c for c in customers if c.demand > capacity]
+    if violations:
+        if len(violations) == 1:
+            c = violations[0]
+            msg = (
+                f"Customer {c.id} has demand {c.demand} which exceeds "
+                f"vehicle capacity {capacity}."
+            )
+        else:
+            parts = [f"customer {c.id} (demand {c.demand})" for c in violations]
+            msg = (
+                f"The following customers exceed vehicle capacity ({capacity}): "
+                f"{', '.join(parts)}."
+            )
+        raise HTTPException(status_code=400, detail=msg)
+
     # Create customer lookup dictionary
     customer_dict = {c.id: c for c in customers}
 

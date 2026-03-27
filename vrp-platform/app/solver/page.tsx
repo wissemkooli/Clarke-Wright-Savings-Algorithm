@@ -1,16 +1,18 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import Head from "next/head";
 import Link from "next/link";
 
 export default function SolverPage() {
   const isLoaded = useRef(false);
 
   useEffect(() => {
+    document.title = "Solver · VRP Lab";
+  }, []);
+
+  useEffect(() => {
     if (isLoaded.current) return;
-    
-    // Dynamically load the Leaflet dependencies sequentially
+
     const loadScripts = async () => {
       const loadScript = (src: string, id: string) => {
         return new Promise((resolve, reject) => {
@@ -29,15 +31,26 @@ export default function SolverPage() {
       };
 
       try {
-        await loadScript("https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js", "leaflet-js");
-        await loadScript("https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js", "leaflet-routing-js");
+        await loadScript(
+          "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js",
+          "leaflet-js",
+        );
+        await loadScript(
+          "https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js",
+          "leaflet-routing-js",
+        );
         await loadScript("/vanilla-app.js", "vanilla-app-js");
         isLoaded.current = true;
-        
-        // Give leafet a tiny delay to ensure the container is sized, then mount
+
         setTimeout(() => {
-          if (typeof window !== "undefined" && (window as any).initializeVRPMapp) {
-            (window as any).initializeVRPMapp();
+          if (
+            typeof window !== "undefined" &&
+            (window as unknown as { initializeVRPMapp?: () => void })
+              .initializeVRPMapp
+          ) {
+            (
+              window as unknown as { initializeVRPMapp: () => void }
+            ).initializeVRPMapp();
           }
         }, 100);
       } catch (err) {
@@ -45,108 +58,147 @@ export default function SolverPage() {
       }
     };
 
-    // Delay script loading slightly to ensure DOM is perfectly ready
     setTimeout(loadScripts, 100);
 
-    return () => {
-      // In a real app we'd clean up map instances here, but vanilla-app.js binds globally
-    };
+    return () => {};
   }, []);
 
   return (
     <>
-      <Head>
-        <title>VRP Solver</title>
-      </Head>
-      {/* We load CSS in the head directly to ensure styling is applied */}
-      <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css" />
-      <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css" />
+      <link
+        rel="stylesheet"
+        href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
+      />
+      <link
+        rel="stylesheet"
+        href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css"
+      />
       <link rel="stylesheet" href="/vanilla-style.css" />
 
-      <div className="min-h-screen bg-zinc-950 text-zinc-100 p-8">
-        <div className="max-w-[1400px] mx-auto bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl overflow-hidden">
-          
-          <header className="p-8 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/50">
+      <div id="vrp-solver-root" className="solver-page">
+        <div className="solver-shell">
+          <div className="solver-shell__header">
             <div>
-              <h1 className="text-3xl font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">Clarke-Wright vs CPLEX Optimizer</h1>
-              <p className="text-zinc-400 mt-2">Vehicle Routing Problem Solver with OpenStreetMap</p>
+              <h1>Clarke–Wright solver</h1>
+              <p>
+                Set a depot and customers on the map, then run the savings
+                heuristic. Routes respect capacity and follow OSRM where
+                available.
+              </p>
             </div>
-            <Link href="/" className="text-sm font-semibold text-zinc-400 hover:text-white transition-colors">
-              &larr; Back to Dashboard
+            <Link href="/" className="solver-back">
+              ← Home
             </Link>
-          </header>
+          </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-[350px_1fr] gap-6 p-6">
-            
-            {/* Left Panel - exact IDs maintained for vanilla-app.js */}
-            <div className="flex flex-col gap-6 max-h-[800px] overflow-y-auto custom-scrollbar pr-2">
-              
-              <div className="bg-zinc-800/50 p-5 rounded-xl border border-zinc-700/50">
-                <h2 className="text-indigo-400 font-semibold mb-4 text-lg">Configuration</h2>
+          <div className="grid grid-cols-1 gap-6 p-5 lg:grid-cols-[minmax(280px,340px)_1fr] lg:p-6">
+            <div className="flex max-h-[min(800px,70vh)] flex-col gap-5 overflow-y-auto pr-1 custom-scrollbar lg:max-h-[800px]">
+              <div className="vrp-panel">
+                <h2 className="vrp-panel-title">Configuration</h2>
                 <div className="form-group">
-                  <label className="text-zinc-300">Vehicle Capacity:</label>
-                  <input type="number" id="capacity" defaultValue="100" min="1" className="bg-zinc-900 text-white border border-zinc-700 rounded-lg focus:border-indigo-500" />
+                  <label htmlFor="capacity">Vehicle capacity</label>
+                  <input
+                    type="number"
+                    id="capacity"
+                    defaultValue="100"
+                    min={1}
+                  />
                 </div>
                 <div className="form-group mt-3">
-                  <label className="text-zinc-300">Default Demand:</label>
-                  <input type="number" id="defaultDemand" defaultValue="15" min="1" className="bg-zinc-900 text-white border border-zinc-700 rounded-lg focus:border-indigo-500" />
+                  <label htmlFor="defaultDemand">Default demand</label>
+                  <input
+                    type="number"
+                    id="defaultDemand"
+                    defaultValue="15"
+                    min={1}
+                  />
                 </div>
               </div>
 
-              <div className="bg-zinc-800/50 p-5 rounded-xl border border-zinc-700/50">
-                <h2 className="text-indigo-400 font-semibold mb-4 text-lg">Map Controls</h2>
-                <p className="text-sm text-zinc-400 mb-4">🔴 Red = Depot | 🔵 Blue = Customer</p>
-                <div className="flex flex-col gap-3">
-                  <button id="setDepotBtn" className="btn btn-warning shadow-md shadow-yellow-900/20 hover:shadow-yellow-900/40">Set Depot</button>
-                  <button id="addCustomerBtn" className="btn btn-primary shadow-md shadow-indigo-900/20 hover:shadow-indigo-900/40">Add Customers</button>
-                  <button id="solveBtn" className="btn btn-success shadow-md shadow-green-900/20 hover:shadow-green-900/40">Solve Clarke-Wright</button>
-                  <button id="clearBtn" className="btn btn-secondary">Clear All</button>
+              <div className="vrp-panel">
+                <h2 className="vrp-panel-title">Map actions</h2>
+                <p className="vrp-legend">
+                  <span style={{ color: "var(--vrp-rose, #e8a598)" }}>●</span>{" "}
+                  Depot ·{" "}
+                  <span style={{ color: "var(--vrp-violet, #b8a9d9)" }}>●</span>{" "}
+                  Customer
+                </p>
+                <div className="flex flex-col gap-0">
+                  <button id="setDepotBtn" className="btn btn-warning" type="button">
+                    Set depot
+                  </button>
+                  <button id="addCustomerBtn" className="btn btn-primary" type="button">
+                    Add customers
+                  </button>
+                  <button id="solveBtn" className="btn btn-success" type="button">
+                    Solve Clarke–Wright
+                  </button>
+                  <button id="clearBtn" className="btn btn-secondary" type="button">
+                    Clear all
+                  </button>
                 </div>
-                <div className="mt-4 p-3 bg-zinc-900 rounded-lg border border-zinc-800">
-                  <strong className="text-zinc-500 text-xs uppercase tracking-wider">Status:</strong> 
-                  <span id="statusText" className="block text-indigo-300 font-medium text-sm mt-1">Click "Set Depot" to start</span>
+                <div className="vrp-status">
+                  <span className="vrp-status-label">Status</span>
+                  <span id="statusText">
+                    Click &quot;Set depot&quot; to start.
+                  </span>
                 </div>
               </div>
 
-              <div className="bg-zinc-800/50 p-5 rounded-xl border border-zinc-700/50">
-                <h2 className="text-indigo-400 font-semibold mb-4 text-lg">Nodes (<span id="nodeCount">0</span>)</h2>
-                <div id="nodesList" className="nodes-list custom-scrollbar"></div>
+              <div className="vrp-panel">
+                <h2 className="vrp-panel-title">
+                  Nodes (<span id="nodeCount">0</span>)
+                </h2>
+                <div id="nodesList" className="nodes-list custom-scrollbar" />
               </div>
 
-              <div className="bg-indigo-900/20 p-5 rounded-xl border border-indigo-500/30" id="resultsSection" style={{ display: "none" }}>
-                <h2 className="text-indigo-400 font-semibold mb-4 text-lg">CW Results</h2>
-                <div id="results" className="text-zinc-300 text-sm"></div>
+              <div
+                className="vrp-panel"
+                id="resultsSection"
+                style={{ display: "none" }}
+              >
+                <h2 className="vrp-panel-title">Results</h2>
+                <div id="results" />
               </div>
             </div>
 
-            {/* Right Panel */}
-            <div className="flex flex-col h-[800px]">
-              <div className="flex-grow rounded-xl overflow-hidden border-2 border-zinc-700/50 shadow-inner relative">
-                {/* z-0 ensures map controls don't overlay Next.js navigation incorrectly */}
-                <div id="map" className="absolute inset-0 z-0"></div>
+            <div className="flex flex-col lg:h-[800px]">
+              <div className="relative min-h-[min(420px,55vh)] flex-grow overflow-hidden rounded-[0.65rem] border border-[rgba(255,255,255,0.08)] bg-[rgba(12,14,20,0.5)] shadow-inner lg:min-h-0">
+                <div id="map" className="absolute inset-0 z-0" />
               </div>
 
-              <div className="mt-6 bg-zinc-800/50 rounded-xl border border-zinc-700/50 p-5 flex-shrink-0">
-                <div className="tabs flex gap-2 border-b border-zinc-700 pb-4">
-                  <button className="tab-btn active px-4 py-2 rounded-lg bg-zinc-700 text-white font-medium hover:bg-zinc-600 transition" data-tab="savings">Top Savings</button>
-                  <button className="tab-btn px-4 py-2 rounded-lg bg-zinc-800 text-zinc-400 font-medium hover:bg-zinc-700 transition" data-tab="steps">Algorithm Steps</button>
+              <div className="vrp-panel mt-5 flex-shrink-0 lg:mt-6">
+                <div className="tabs pb-3">
+                  <button
+                    className="tab-btn active"
+                    type="button"
+                    data-tab="savings"
+                  >
+                    Top savings
+                  </button>
+                  <button className="tab-btn" type="button" data-tab="steps">
+                    Algorithm steps
+                  </button>
                 </div>
 
-                <div className="tab-content mt-4 max-h-[200px] overflow-y-auto custom-scrollbar">
+                <div className="tab-content max-h-[220px] custom-scrollbar">
                   <div id="savings-tab" className="tab-pane active">
-                    <div id="savingsTable" className="text-zinc-300">
-                      <p className="text-zinc-500 italic text-center py-8">Savings will appear here after solving</p>
+                    <div id="savingsTable" className="text-[var(--text-muted)]">
+                      <p className="placeholder-text">
+                        Savings will appear here after you solve.
+                      </p>
                     </div>
                   </div>
                   <div id="steps-tab" className="tab-pane hidden">
-                    <div id="stepsContent" className="text-zinc-300">
-                      <p className="text-zinc-500 italic text-center py-8">Algorithm steps will appear here after solving</p>
+                    <div id="stepsContent" className="text-[var(--text-muted)]">
+                      <p className="placeholder-text">
+                        Steps will appear here after you solve.
+                      </p>
                     </div>
                   </div>
                 </div>
               </div>
             </div>
-
           </div>
         </div>
       </div>

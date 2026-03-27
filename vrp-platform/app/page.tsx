@@ -1,36 +1,49 @@
-import Link from 'next/link';
+import Link from "next/link";
 
 export default function Home() {
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center p-8 bg-zinc-950 text-white">
-      <h1 className="text-6xl font-extrabold mb-6 tracking-tight bg-gradient-to-br from-indigo-400 via-purple-400 to-pink-400 bg-clip-text text-transparent text-center">
-        VRP Master's Platform
-      </h1>
-      <p className="max-w-2xl text-center text-lg text-zinc-400 mb-10">
-        Advanced research platform comparing Clarke-Wright heuristics against CPLEX optimal solutions for the Vehicle Routing Problem. Includes analytics, ML predictions, and automated reporting.
-      </p>
+    <>
+      <div className="home-hero">
+        <p className="home-hero__eyebrow">Operations research, on a map</p>
+        <h1>Plan routes that respect capacity and the real road network</h1>
+        <p>
+          A quiet workspace for Clarke–Wright savings on OpenStreetMap: place a
+          depot and customers, then watch merges and savings unfold with
+          road-snapped geometry—not a generic dashboard template.
+        </p>
+      </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-4xl w-full">
-        <Link href="/solver" className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800 hover:border-indigo-500 hover:bg-zinc-800 transition-all group">
-          <h2 className="text-2xl font-semibold mb-2 group-hover:text-indigo-400 transition-colors">Solver Interface &rarr;</h2>
-          <p className="text-zinc-500">Run CW vs CPLEX directly on the map and compare results.</p>
+      <div className="home-grid">
+        <Link href="/solver" className="home-card home-card--solver">
+          <h2>Solver</h2>
+          <p>
+            Interactive map, demand controls, and step-by-step savings with the
+            classic heuristic.
+          </p>
         </Link>
 
-        <Link href="/analytics" className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800 hover:border-blue-500 hover:bg-zinc-800 transition-all group">
-          <h2 className="text-2xl font-semibold mb-2 group-hover:text-blue-400 transition-colors">Analytics &rarr;</h2>
-          <p className="text-zinc-500">Visualize benchmarks and performance metrics.</p>
+        <Link href="/analytics" className="home-card home-card--analytics">
+          <h2>Analytics</h2>
+          <p>
+            Benchmarks and performance views for heuristics versus exact
+            methods.
+          </p>
         </Link>
 
-        <Link href="/predictions" className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800 hover:border-emerald-500 hover:bg-zinc-800 transition-all group">
-          <h2 className="text-2xl font-semibold mb-2 group-hover:text-emerald-400 transition-colors">Predictions &rarr;</h2>
-          <p className="text-zinc-500">View ML model predictions for upcoming deliveries.</p>
+        <Link href="/predictions" className="home-card home-card--predictions">
+          <h2>Predictions</h2>
+          <p>
+            Placeholder for ML-assisted workload and delivery forecasts.
+          </p>
         </Link>
-        
-        <Link href="/report" className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800 hover:border-pink-500 hover:bg-zinc-800 transition-all group">
-          <h2 className="text-2xl font-semibold mb-2 group-hover:text-pink-400 transition-colors">Generate Report &rarr;</h2>
-          <p className="text-zinc-500">Export PDF reports of scenarios and solutions.</p>
+
+        <Link href="/report" className="home-card home-card--report">
+          <h2>Reports</h2>
+          <p>
+            Export-oriented views for scenarios and solution summaries.
+          </p>
         </Link>
       </div>
-    </div>
+    </>
   );
 }
