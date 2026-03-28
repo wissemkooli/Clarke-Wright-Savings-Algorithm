@@ -1,4 +1,6 @@
 # Triggering hot reload
+from contextlib import asynccontextmanager
+import logging
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -11,10 +13,22 @@ from sqlalchemy.orm import Session
 from backend import models
 from backend.database import engine, get_db
 
-# Create DB schemas
-models.Base.metadata.create_all(bind=engine)
+logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Clarke-Wright VRP Solver")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        models.Base.metadata.create_all(bind=engine)
+    except Exception as exc:
+        logger.warning(
+            "PostgreSQL unavailable (%s). Solver API works; persist endpoints need a valid DATABASE_URL.",
+            exc,
+        )
+    yield
+
+
+app = FastAPI(title="Clarke-Wright VRP Solver", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
