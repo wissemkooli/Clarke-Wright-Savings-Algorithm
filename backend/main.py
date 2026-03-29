@@ -2,8 +2,6 @@ import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 from backend import models
 from backend.database import engine
 from backend.routers import solver, results
@@ -40,11 +38,3 @@ app.include_router(results.router)
 @app.get("/")
 async def root():
     return {"message": "Clarke-Wright VRP Solver API"}
-
-
-@app.get("/static/index.html")
-async def serve_index():
-    return FileResponse("static/index.html")
-
-
-app.mount("/static", StaticFiles(directory="static"), name="static")
