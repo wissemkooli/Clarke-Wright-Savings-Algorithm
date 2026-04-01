@@ -78,3 +78,32 @@ async function parseFastApiError(response: Response): Promise<string> {
   return fallback;
 }
 
+export async function solveCplex(request: VRPRequest): Promise<VRPResponse> {
+  const response = await fetch(`${API_URL}/api/solve/cplex`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const msg = await parseFastApiError(response);
+    throw new Error(msg);
+  }
+
+  return (await response.json()) as VRPResponse;
+}
+
+export async function solveCompare(request: VRPRequest): Promise<{ clarke_wright: VRPResponse, cplex: VRPResponse }> {
+  const response = await fetch(`${API_URL}/api/solve/compare`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const msg = await parseFastApiError(response);
+    throw new Error(msg);
+  }
+
+  return await response.json();
+}

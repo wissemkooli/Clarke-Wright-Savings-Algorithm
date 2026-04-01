@@ -39,3 +39,7 @@ export type VRPResponse = {
   steps: string[];
 };
 
+export type VRPComparisonResponse = {
+  clarke_wright: VRPResponse;
+  cplex: VRPResponse;
+};
