@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import type { Node, Route as VrpRoute, VRPResponse } from "../types/vrp";
-import { solveClarkeWright, fetchOsrmRoute } from "../services/vrpApi";
+import { solveClarkeWright } from "../services/vrpApi";
 import { ControlPanel } from "../components/solver/ControlPanel";
 import { NodesList } from "../components/solver/NodesList";
 import { SavingsTable } from "../components/solver/SavingsTable";
@@ -110,46 +110,20 @@ export default function SolverPage() {
     [],
   );
 
-  const buildStraightPolyline = useCallback(
-    (route: VrpRoute): Array<[number, number]> => {
-      if (!depot) return [];
-      const pts: Array<[number, number]> = [[depot.lat, depot.lng]];
-      for (const id of route.customers) {
-        const c = customers.find((x) => x.id === id);
-        if (c) pts.push([c.lat, c.lng]);
-      }
-      pts.push([depot.lat, depot.lng]);
-      return pts;
-    },
-    [customers, depot],
-  );
-
   const buildRenderRoutes = useCallback(
-    async (data: VRPResponse) => {
+    (data: VRPResponse) => {
       if (!depot) return;
-      setStatusText(`Drawing ${data.routes.length} optimized routes...`);
-
-      const rendered: RenderRoute[] = [];
-      for (let idx = 0; idx < data.routes.length; idx++) {
-        const route = data.routes[idx]!;
-        const color = colors[idx % colors.length]!;
-        const waypointNodes: Array<Pick<Node, "lat" | "lng">> = [{ lat: depot.lat, lng: depot.lng }];
-        for (const custId of route.customers) {
-          const c = customers.find((x) => x.id === custId);
-          if (c) waypointNodes.push({ lat: c.lat, lng: c.lng });
-        }
-        waypointNodes.push({ lat: depot.lat, lng: depot.lng });
-
-        const osrm = await fetchOsrmRoute(waypointNodes);
-        const polyline = osrm.ok ? osrm.coordinates : buildStraightPolyline(route);
-
-        rendered.push({ ...route, color, polyline });
-      }
-
+      const rendered: RenderRoute[] = data.routes
+        .filter((route) => route.geometry?.length)
+        .map((route, idx) => ({
+          ...route,
+          color: colors[idx % colors.length]!,
+          polyline: route.geometry,
+        }));
       setRenderRoutes(rendered);
-      setStatusText(`✅ Solution complete! ${data.routes.length} vehicles used.`);
+      setStatusText(` Solution complete! ${data.routes.length} vehicles used.`);
     },
-    [buildStraightPolyline, colors, customers, depot],
+    [colors, depot],
   );
 
   const solve = useCallback(async () => {
@@ -181,7 +155,7 @@ export default function SolverPage() {
         vehicle_capacity: vehicleCapacity,
       });
       setSolution(data);
-      await buildRenderRoutes(data);
+      buildRenderRoutes(data);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       setError(message);
@@ -237,10 +211,7 @@ export default function SolverPage() {
 
   return (
     <>
-      <link
-        rel="stylesheet"
-        href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
-      />
+      <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css" />
       <link rel="stylesheet" href="/vanilla-style.css" />
 
       <div id="vrp-solver-root" className="solver-page">
@@ -301,15 +272,14 @@ export default function SolverPage() {
               <div className="vrp-panel" id="resultsSection" style={{ display: solution ? "block" : "none" }}>
                 <h2 className="vrp-panel-title">Results</h2>
                 <div id="results">
-                  {solution && depot ? (
+                  {solution && (
                     <ResultsSummary
                       capacity={vehicleCapacity}
-                      routes={solution.routes}
-                      totalDistance={solution.total_distance}
+                      solution={solution}
                       colors={colors}
                       error={error}
                     />
-                  ) : null}
+                  )}
                 </div>
               </div>
             </div>
@@ -371,14 +341,12 @@ export default function SolverPage() {
 
 function ResultsSummary({
   capacity,
-  routes,
-  totalDistance,
+  solution,
   colors,
   error,
 }: {
   capacity: number;
-  routes: VrpRoute[];
-  totalDistance: number;
+  solution: VRPResponse;
   colors: string[];
   error: string | null;
 }) {
@@ -386,29 +354,111 @@ function ResultsSummary({
     return <div className="info-text">{error}</div>;
   }
 
+  const formatDuration = (s: number) => {
+    const m = Math.floor(s / 60);
+    const sec = Math.round(s % 60);
+    return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
+  };
+
+  const gapPct =
+    solution.total_road_distance_km != null
+      ? (((solution.total_road_distance_km - solution.total_distance) / solution.total_distance) * 100).toFixed(0)
+      : null;
+
   return (
-    <div>
-      <div>
-        <strong>Vehicle Capacity:</strong> {capacity}
-        <br />
-        <strong>Total Distance:</strong> {Number.isFinite(totalDistance) ? totalDistance.toFixed(2) : totalDistance} km
-        <br />
-        <strong>Number of Vehicles:</strong> {routes.length}
-        <br />
-        <br />
+    <div style={{ fontFamily: "inherit", fontSize: "0.82rem" }}>
+
+      {/* ── Summary cards ── */}
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "1fr 1fr",
+        gap: "6px",
+        marginBottom: "12px",
+      }}>
+        {[
+          { label: "Vehicles", value: solution.num_vehicles ?? solution.routes.length },
+          { label: "Solve time", value: solution.computation_time_ms != null ? `${solution.computation_time_ms} ms` : "—" },
+          { label: "Road dist.", value: solution.total_road_distance_km != null ? `${solution.total_road_distance_km.toFixed(2)} km` : "—" },
+          { label: "Total drive time", value: solution.total_duration_s != null ? formatDuration(solution.total_duration_s) : "—" },
+          { label: "Vehicle capacity", value: capacity },
+        ].map(({ label, value }) => (
+          <div key={label} style={{
+            background: "rgba(255,255,255,0.04)",
+            border: "1px solid rgba(255,255,255,0.08)",
+            borderRadius: "6px",
+            padding: "8px 10px",
+          }}>
+            <div style={{ color: "var(--text-muted, #888)", fontSize: "0.7rem", marginBottom: "2px" }}>{label}</div>
+            <div style={{ color: "var(--text, #fff)", fontWeight: 600 }}>{value}</div>
+          </div>
+        ))}
       </div>
 
-      {routes.map((route, i) => {
-        const utilization = Number.isFinite(capacity) && capacity > 0 ? ((route.total_demand / capacity) * 100).toFixed(1) : "0.0";
+
+      {/* ── Per-route breakdown ── */}
+      {solution.routes.map((route, i) => {
+        const utilization = Number.isFinite(capacity) && capacity > 0
+          ? ((route.total_demand / capacity) * 100)
+          : 0;
         const color = colors[i % colors.length] ?? "#e8a598";
+
         return (
-          <div key={i}>
-            <strong style={{ color }}>Vehicle {i + 1}:</strong> Depot → {route.customers.join(" → ")} → Depot
-            <br />
-            Load: {route.total_demand}/{capacity} ({utilization}% full) | Distance:{" "}
-            {Number.isFinite(route.total_distance) ? route.total_distance.toFixed(2) : route.total_distance} km
-            <br />
-            <br />
+          <div key={i} style={{
+            borderLeft: `3px solid ${color}`,
+            paddingLeft: "10px",
+            marginBottom: "14px",
+          }}>
+            <div style={{ fontWeight: 600, color, marginBottom: "4px" }}>
+              Vehicle {i + 1}
+            </div>
+            <div style={{
+              color: "var(--text-muted, #aaa)",
+              marginBottom: "6px",
+              lineHeight: 1.6,
+              fontSize: "0.78rem",
+              wordBreak: "break-word",
+            }}>
+              Depot → {route.customers.join(" → ")} → Depot
+            </div>
+
+            {/* utilization bar */}
+            <div style={{
+              height: "4px",
+              background: "rgba(255,255,255,0.08)",
+              borderRadius: "2px",
+              marginBottom: "8px",
+              overflow: "hidden",
+            }}>
+              <div style={{
+                height: "100%",
+                width: `${utilization}%`,
+                background: color,
+                borderRadius: "2px",
+              }} />
+            </div>
+
+            <div style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr 1fr",
+              gap: "4px",
+              fontSize: "0.72rem",
+            }}>
+              {[
+                { label: "Load", value: `${route.total_demand}/${capacity} (${utilization.toFixed(0)}%)` },
+                { label: "Road dist.", value: route.road_distance_km != null ? `${route.road_distance_km.toFixed(2)} km` : "—" },
+                { label: "Drive time", value: route.duration_s != null ? formatDuration(route.duration_s) : "—" },
+              ].map(({ label, value }) => (
+                <div key={label} style={{
+                  background: "rgba(255,255,255,0.03)",
+                  border: "1px solid rgba(255,255,255,0.06)",
+                  borderRadius: "4px",
+                  padding: "5px 6px",
+                }}>
+                  <div style={{ color: "var(--text-muted, #777)", marginBottom: "2px" }}>{label}</div>
+                  <div style={{ color: "var(--text, #ddd)", fontWeight: 500 }}>{value}</div>
+                </div>
+              ))}
+            </div>
           </div>
         );
       })}
@@ -423,7 +473,11 @@ function stripVrpCsv(text: string): string {
   return t.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
 }
 
-function parseVrpCsv(text: string): { error?: string; depot?: { lat: number; lng: number }; customers?: Array<{ lat: number; lng: number; demand: number }> } {
+function parseVrpCsv(text: string): {
+  error?: string;
+  depot?: { lat: number; lng: number };
+  customers?: Array<{ lat: number; lng: number; demand: number }>;
+} {
   const raw = stripVrpCsv(text);
   if (!raw) return { error: "CSV is empty." };
   const lines = raw

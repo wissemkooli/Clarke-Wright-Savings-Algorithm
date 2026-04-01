@@ -4,7 +4,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from backend import models
 from backend.database import engine
-from backend.routers import solver, results
+from backend.routers import solver, results, predictions
+
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ app.add_middleware(
 
 app.include_router(solver.router)
 app.include_router(results.router)
+app.include_router(predictions.router)
 
 
 @app.get("/")

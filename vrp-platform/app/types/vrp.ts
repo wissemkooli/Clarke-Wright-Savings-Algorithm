@@ -17,6 +17,9 @@ export type Route = {
   customers: number[];
   total_demand: number;
   total_distance: number;
+  geometry: [number, number][];
+  road_distance_km?: number;
+  duration_s?: number;
 };
 
 export type SavingsRow = {
@@ -28,6 +31,10 @@ export type SavingsRow = {
 export type VRPResponse = {
   routes: Route[];
   total_distance: number;
+  total_road_distance_km?: number;
+  total_duration_s?: number;
+  num_vehicles?: number;
+  computation_time_ms?: number;
   savings_table: SavingsRow[];
   steps: string[];
 };
