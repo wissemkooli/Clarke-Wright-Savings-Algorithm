@@ -85,6 +85,30 @@ export default function SolverPage() {
     setStatusText('Click "Set depot" to start');
   }, []);
 
+  const exportToCsv = useCallback(() => {
+    if (!depot) {
+      setStatusText("Export failed: no depot set.");
+      return;
+    }
+
+    const rows = [
+      `${depot.lat},${depot.lng}`,
+      ...customers.map((c) => `${c.lat},${c.lng},${c.demand}`),
+    ];
+
+    const csvContent = rows.join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `vrp_export_${new Date().toISOString().replace(/[:.]/g, "-")}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    setStatusText(`CSV export ready (${customers.length} customer(s)).`);
+  }, [customers, depot]);
+
   const handleMapClick = useCallback(
     (lat: number, lng: number) => {
       if (mode === "setDepot") {
@@ -282,9 +306,7 @@ export default function SolverPage() {
           <div className="solver-shell__header">
             <div>
               <h1>VRP Multi-Engine Solver</h1>
-              <p>
-                Heuristic or Exact Optimal? Toggle algorithms to solve or compare performance.
-              </p>
+              <p className="whitespace-nowrap">Heuristic or Exact Optimal? Toggle algorithms to solve or compare performance.</p>
 
               {/* Algorithm Toggles */}
               <div className="flex gap-3 mt-4">
@@ -343,6 +365,8 @@ export default function SolverPage() {
                   }
                   importFromCsvText(csvText);
                 }}
+                onExportCsv={exportToCsv}
+                disableExportCsv={!depot || customers.length === 0}
               />
 
               <div className="vrp-panel flex-shrink-0">
@@ -390,7 +414,7 @@ export default function SolverPage() {
             </div>
 
             <div className="flex flex-col lg:h-[800px]">
-              <div className="relative h-[400px] flex-shrink-0 overflow-hidden rounded-[0.65rem] border border-[rgba(255,255,255,0.08)] bg-[rgba(12,14,20,0.5)] shadow-inner">
+              <div className="relative h-[480px] flex-shrink-0 overflow-hidden rounded-[0.65rem] border border-[rgba(255,255,255,0.08)] bg-[rgba(12,14,20,0.5)] shadow-inner">
                 <div id="map" className="absolute inset-0 z-0">
                   <MapView
                     depot={depot}

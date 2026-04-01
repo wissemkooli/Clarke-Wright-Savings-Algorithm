@@ -18,6 +18,8 @@ type Props = {
   onSolve: () => void;
   onClear: () => void;
   onImportCsvText: (csvText: string) => void;
+  onExportCsv: () => void;
+  disableExportCsv: boolean;
 };
 
 export function ControlPanel({
@@ -34,10 +36,12 @@ export function ControlPanel({
   onSolve,
   onClear,
   onImportCsvText,
+  onExportCsv,
+  disableExportCsv,
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const solveLabel = useMemo(() => (isLoading ? "Solving..." : "Solve Clarke–Wright"), [isLoading]);
+  const solveLabel = useMemo(() => (isLoading ? "Solving..." : "Solve"), [isLoading]);
 
   return (
     <>
@@ -125,6 +129,15 @@ export function ControlPanel({
             disabled={isLoading}
           >
             Import CSV
+          </button>
+          <button
+            id="exportCsvBtn"
+            className="btn btn-secondary"
+            type="button"
+            onClick={onExportCsv}
+            disabled={disableExportCsv || isLoading}
+          >
+            Export CSV
           </button>
         </div>
         <div className="vrp-status">
