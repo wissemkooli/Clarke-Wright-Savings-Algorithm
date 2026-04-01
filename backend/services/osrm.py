@@ -33,3 +33,30 @@ async def get_osrm_route(waypoints: list[tuple[float, float]]) -> dict:
 
     except Exception as e:
         return {"ok": False, "reason": str(e)}
+
+async def get_osrm_table(waypoints: list[tuple[float, float]]) -> dict:
+    if len(waypoints) < 2:
+        return {"ok": False, "reason": "Need at least two waypoints."}
+
+    coords = ";".join(f"{lng},{lat}" for lat, lng in waypoints)
+    url = f"{OSRM_BASE}/table/v1/driving/{coords}?annotations=distance"
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url)
+            if not resp.is_success:
+                return {"ok": False, "reason": f"OSRM HTTP {resp.status_code}"}
+
+        data = resp.json()
+        if data.get("code") != "Ok" or "distances" not in data:
+            return {"ok": False, "reason": "OSRM returned no distances."}
+
+        # Convert meters to km
+        distances_km = [
+            [round(dist / 1000, 3) if dist is not None else -1 for dist in row]
+            for row in data["distances"]
+        ]
+        return {"ok": True, "distances": distances_km}
+
+    except Exception as e:
+        return {"ok": False, "reason": str(e)}

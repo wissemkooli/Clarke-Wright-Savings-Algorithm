@@ -1,11 +1,12 @@
 from docplex.mp.model import Model
 from backend.schemas.vrp import VRPRequest, VRPResponse, Route
-from backend.services.osrm import get_osrm_route
+from backend.services.osrm import get_osrm_route, get_osrm_table
 
 import time
 
 
 async def solve_with_cplex(request: VRPRequest) -> VRPResponse:
+    start_time = time.perf_counter()
     nodes = request.nodes
     depot_id = request.depot_id
     Q = request.vehicle_capacity
@@ -19,21 +20,23 @@ async def solve_with_cplex(request: VRPRequest) -> VRPResponse:
     N = len(all_nodes)
 
     # ── OSRM distance matrix ──
+    table_res = await get_osrm_table([(n.lat, n.lng) for n in all_nodes])
+    distances_km = table_res.get("distances", []) if table_res.get("ok") else []
+
     dist = {}
     for i in range(N):
         for j in range(N):
             if i != j:
-                osrm = await get_osrm_route([
-                    (all_nodes[i].lat, all_nodes[i].lng),
-                    (all_nodes[j].lat, all_nodes[j].lng),
-                ])
-                dist[i, j] = osrm["distance_km"] if osrm["ok"] else _haversine(
+                d = -1
+                if i < len(distances_km) and j < len(distances_km[i]):
+                    d = distances_km[i][j]
+                
+                dist[i, j] = d if d >= 0 else _haversine(
                     all_nodes[i].lat, all_nodes[i].lng,
                     all_nodes[j].lat, all_nodes[j].lng
                 )
 
     # ── MIP model ──
-    start = time.perf_counter()
     mdl = Model(name="CVRP")
 
     x = {(i, j): mdl.binary_var(name=f"x_{i}_{j}")
@@ -61,7 +64,6 @@ async def solve_with_cplex(request: VRPRequest) -> VRPResponse:
         mdl.add_constraint(f[i, j] <= Q * x[i, j])
 
     solution = mdl.solve(log_output=False)
-    computation_time_ms = round((time.perf_counter() - start) * 1000, 2)
 
     if solution is None:
         raise Exception("CPLEX found no solution")
@@ -113,7 +115,7 @@ async def solve_with_cplex(request: VRPRequest) -> VRPResponse:
         total_distance=round(sum(r.total_distance for r in routes), 2),
         savings_table=[],
         steps=[f"CPLEX solved {n} customers with {len(routes)} vehicles — OPTIMAL"],
-        computation_time_ms=computation_time_ms,
+        computation_time_ms=round((time.perf_counter() - start_time) * 1000, 2),
         num_vehicles=len(routes),
     )
     result.total_road_distance_km = round(

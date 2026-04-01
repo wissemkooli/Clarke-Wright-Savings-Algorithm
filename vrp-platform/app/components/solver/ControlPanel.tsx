@@ -72,8 +72,8 @@ export function ControlPanel({
       <div className="vrp-panel">
         <h2 className="vrp-panel-title">Map actions</h2>
         <p className="vrp-legend">
-          <span style={{ color: "var(--vrp-rose, #e8a598)" }}>●</span> Depot ·{" "}
-          <span style={{ color: "var(--vrp-violet, #b8a9d9)" }}>●</span> Customer
+          <span style={{ color: "#e74c3c" }}>●</span> Depot ·{" "}
+          <span style={{ color: "#3498db" }}>●</span> Customer
         </p>
         <div className="flex flex-col gap-0">
           <button id="setDepotBtn" className="btn btn-warning" type="button" onClick={onSetDepot} disabled={isLoading}>
