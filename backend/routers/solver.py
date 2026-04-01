@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 from backend.schemas.vrp import VRPRequest, VRPResponse
 from backend.services.clarke_wright import clarke_wright_algorithm
-from backend.services.cplex_proxy import solve_with_cplex
+from backend.services.cplex_solver import solve_with_cplex
 from backend.services.osrm import get_osrm_route
 import time
 
@@ -41,3 +41,16 @@ async def solve_clarke_wright(request: VRPRequest):
 @router.post("/cplex")
 async def solve_cplex(request: VRPRequest):
     return await solve_with_cplex(request)
+
+
+@router.post("/compare")
+async def solve_compare(request: VRPRequest):
+    import asyncio
+    cw, cplex = await asyncio.gather(
+        solve_clarke_wright(request),
+        solve_with_cplex(request),
+    )
+    return {
+        "clarke_wright": cw,
+        "cplex": cplex,
+    }
