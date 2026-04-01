@@ -1,5 +1,11 @@
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Any
+
+class MergeEvent(BaseModel):
+    i: int
+    j: int
+    routes: List[List[int]]
+    geometries: Optional[List[List[List[float]]]] = None
 
 
 class Node(BaseModel):
@@ -34,3 +40,4 @@ class VRPResponse(BaseModel):
     computation_time_ms: Optional[float] = None
     savings_table: List[dict]
     steps: List[str]
+    merge_events: Optional[List[MergeEvent]] = None

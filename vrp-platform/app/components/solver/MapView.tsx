@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import L from "leaflet";
 import { MapContainer, Marker, Polyline, TileLayer, Tooltip, useMap, useMapEvents } from "react-leaflet";
-import type { Node, Route } from "../../types/vrp";
+import type { Node, Route, MergeEvent } from "../../types/vrp";
 
 type SolverMode = "idle" | "setDepot" | "addCustomer";
 
@@ -19,6 +19,7 @@ type Props = {
   routes: RenderRoute[];
   onMapClick: (lat: number, lng: number) => void;
   fitToNodesToken?: number;
+  mergeEvents?: MergeEvent[];
 };
 
 function CustomerMarker({ node }: { node: Node }) {
@@ -71,7 +72,7 @@ function FitToNodes({ depot, customers, token }: { depot: Node | null; customers
   return null;
 }
 
-export function MapView({ depot, customers, mode, routes, onMapClick, fitToNodesToken }: Props) {
+export function MapView({ depot, customers, mode, routes, onMapClick, fitToNodesToken, mergeEvents }: Props) {
   const depotIcon = useMemo(
     () =>
       L.divIcon({
@@ -83,8 +84,68 @@ export function MapView({ depot, customers, mode, routes, onMapClick, fitToNodes
     [],
   );
 
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [playbackStep, setPlaybackStep] = useState(0);
+
+  useEffect(() => {
+    if (!isPlaying) return;
+    if (!mergeEvents || playbackStep >= mergeEvents.length - 1) {
+      setIsPlaying(false);
+      return;
+    }
+    const t = setTimeout(() => {
+      setPlaybackStep((s) => s + 1);
+    }, 800);
+    return () => clearTimeout(t);
+  }, [isPlaying, playbackStep, mergeEvents]);
+
+  // Reset player when props change (new solve)
+  useEffect(() => {
+    setIsPlaying(false);
+    if (mergeEvents && mergeEvents.length > 0) {
+      setPlaybackStep(mergeEvents.length - 1);
+    } else {
+      setPlaybackStep(0);
+    }
+  }, [routes, mergeEvents]);
+
+  const displayedRoutes = useMemo(() => {
+    if (!mergeEvents || mergeEvents.length === 0) return routes;
+    if (!isPlaying && playbackStep === mergeEvents.length - 1) return routes;
+    if (playbackStep === mergeEvents.length - 1) return routes;
+    if (!depot) return [];
+
+    const nodeMap = new Map<number, Node>();
+    for (const c of customers) nodeMap.set(c.id, c);
+
+    const activeEvent = mergeEvents[playbackStep];
+    const activeRouteNodes = activeEvent.routes;
+    const activeGeoms = activeEvent.geometries || [];
+
+    const routeColors = ["#e74c3c", "#3498db", "#2ecc71", "#f39c12", "#9b59b6", "#1abc9c", "#e67e22", "#34495e"];
+
+    return activeRouteNodes.map((customerIds, idx) => {
+      const geom = activeGeoms.length > idx ? activeGeoms[idx] : [];
+      let demand = 0;
+      for (const cid of customerIds) {
+        const c = nodeMap.get(cid);
+        if (c) demand += c.demand;
+      }
+
+      return {
+        customers: customerIds,
+        total_demand: demand,
+        total_distance: 0,
+        geometry: geom,
+        color: routeColors[idx % routeColors.length],
+        polyline: geom
+      } as RenderRoute;
+    });
+  }, [routes, mergeEvents, isPlaying, playbackStep, depot, customers]);
+
   return (
-    <MapContainer
+    <>
+      <MapContainer
       center={[36.8065, 10.1815]}
       zoom={13}
       style={{ height: "100%", width: "100%" }}
@@ -111,7 +172,7 @@ export function MapView({ depot, customers, mode, routes, onMapClick, fitToNodes
         <CustomerMarker key={c.id} node={c} />
       ))}
 
-      {routes.map((r, idx) => (
+      {displayedRoutes.map((r, idx) => (
         <Polyline key={idx} positions={r.polyline} pathOptions={{ color: r.color, weight: 5, opacity: 0.8 }}>
           <Tooltip sticky direction="center" opacity={0.95}>
             Load: {r.total_demand}
@@ -119,6 +180,47 @@ export function MapView({ depot, customers, mode, routes, onMapClick, fitToNodes
         </Polyline>
       ))}
     </MapContainer>
+    
+    {mergeEvents && mergeEvents.length > 0 && (
+      <div className="absolute top-4 right-4 z-[400] bg-[rgba(15,20,30,0.9)] border border-[rgba(255,255,255,0.1)] rounded-lg p-3 shadow-xl flex flex-col gap-2 min-w-[200px] pointer-events-auto">
+        <div className="text-[11px] font-bold uppercase tracking-wider text-gray-400 mb-1 flex justify-between">
+          <span>Algorithm Playback</span>
+          <span className="text-blue-400">Step {playbackStep} / {mergeEvents.length - 1}</span>
+        </div>
+        
+        <div className="flex items-center gap-2">
+          <button
+            onClick={(e) => { e.stopPropagation(); setIsPlaying(!isPlaying); if (playbackStep >= mergeEvents.length - 1) setPlaybackStep(0); }}
+            className="flex-1 bg-blue-500 hover:bg-blue-600 text-white rounded px-3 py-1.5 text-xs font-bold transition-colors"
+          >
+            {isPlaying ? "Pause" : (playbackStep >= mergeEvents.length - 1 ? "Replay" : "Play")}
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); setIsPlaying(false); setPlaybackStep(0); }}
+            className="bg-gray-700 hover:bg-gray-600 text-white rounded px-3 py-1.5 text-xs transition-colors"
+            title="Reset"
+          >
+            ⏮
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); setIsPlaying(false); setPlaybackStep(mergeEvents.length - 1); }}
+            className="bg-gray-700 hover:bg-gray-600 text-white rounded px-3 py-1.5 text-xs transition-colors"
+            title="Skip to end"
+          >
+            ⏭
+          </button>
+        </div>
+        
+        {/* Progress bar */}
+        <div className="h-1.5 bg-gray-800 rounded-full mt-1 overflow-hidden">
+           <div 
+             className="h-full bg-blue-400 transition-all duration-300"
+             style={{ width: `${(playbackStep / Math.max(1, mergeEvents.length - 1)) * 100}%` }}
+           />
+        </div>
+      </div>
+    )}
+    </>
   );
 }
 

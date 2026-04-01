@@ -22,6 +22,12 @@ export type Route = {
   duration_s?: number;
 };
 
+export type MergeEvent = {
+  i: number;
+  j: number;
+  routes: number[][];
+};
+
 export type SavingsRow = {
   i: number;
   j: number;
@@ -37,6 +43,7 @@ export type VRPResponse = {
   computation_time_ms?: number;
   savings_table: SavingsRow[];
   steps: string[];
+  merge_events?: MergeEvent[];
 };
 
 export type VRPComparisonResponse = {

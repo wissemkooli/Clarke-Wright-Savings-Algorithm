@@ -10,7 +10,7 @@ router = APIRouter(prefix="/api/solve", tags=["solver"])
 @router.post("/clarke-wright", response_model=VRPResponse)
 async def solve_clarke_wright(request: VRPRequest):
     start_time = time.perf_counter()
-    result = clarke_wright_algorithm(request.nodes, request.depot_id, request.vehicle_capacity)
+    result = await clarke_wright_algorithm(request.nodes, request.depot_id, request.vehicle_capacity)
 
     depot = next(n for n in request.nodes if n.id == request.depot_id)
     node_map = {n.id: n for n in request.nodes}

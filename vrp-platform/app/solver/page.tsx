@@ -30,8 +30,8 @@ export default function SolverPage() {
   const [mode, setMode] = useState<"idle" | "setDepot" | "addCustomer">("idle");
   const [depot, setDepot] = useState<Node | null>(null);
   const [customers, setCustomers] = useState<Node[]>([]);
-  const [vehicleCapacity, setVehicleCapacity] = useState<number>(100);
-  const [defaultDemand, setDefaultDemand] = useState<number>(15);
+  const [vehicleCapacity, setVehicleCapacity] = useState<number | "">(100);
+  const [defaultDemand, setDefaultDemand] = useState<number | "">(15);
 
   // Algorithm State
   const [activeAlgs, setActiveAlgs] = useState<string[]>(["clarke-wright"]);
@@ -51,17 +51,18 @@ export default function SolverPage() {
   }, []);
 
   const capacityViolationMessage = useMemo(() => {
-    if (!Number.isFinite(vehicleCapacity) || vehicleCapacity <= 0) {
+    if (vehicleCapacity === "" || !Number.isFinite(vehicleCapacity) || (vehicleCapacity as number) <= 0) {
       return "Enter a valid vehicle capacity greater than zero.";
     }
-    const bad = customers.filter((c) => c.demand > vehicleCapacity);
+    const capNum = vehicleCapacity as number;
+    const bad = customers.filter((c) => c.demand > capNum);
     if (!bad.length) return null;
     if (bad.length === 1) {
       const c = bad[0]!;
-      return `Customer ${c.id} has demand ${c.demand} which exceeds vehicle capacity ${vehicleCapacity}.`;
+      return `Customer ${c.id} has demand ${c.demand} which exceeds vehicle capacity ${capNum}.`;
     }
     return (
-      `The following customers exceed vehicle capacity (${vehicleCapacity}): ` +
+      `The following customers exceed vehicle capacity (${capNum}): ` +
       bad.map((c) => `customer ${c.id} (demand ${c.demand})`).join(", ") +
       "."
     );
@@ -69,7 +70,7 @@ export default function SolverPage() {
 
   const disableSolve = useMemo(() => {
     const baseDisable = !depot || customers.length < 2 || isLoading || activeAlgs.length === 0;
-    const badCapacity = !Number.isFinite(vehicleCapacity) || vehicleCapacity <= 0;
+    const badCapacity = vehicleCapacity === "" || !Number.isFinite(vehicleCapacity) || (vehicleCapacity as number) <= 0;
     return baseDisable || badCapacity || capacityViolationMessage !== null;
   }, [activeAlgs.length, capacityViolationMessage, customers.length, depot, isLoading, vehicleCapacity]);
 
@@ -125,7 +126,7 @@ export default function SolverPage() {
 
       if (mode === "addCustomer") {
         const id = nextCustomerId.current++;
-        const demand = Number.isFinite(defaultDemand) && defaultDemand >= 0 ? Math.trunc(defaultDemand) : 0;
+        const demand = typeof defaultDemand === "number" && defaultDemand >= 0 ? Math.trunc(defaultDemand) : 0;
         const customer: Node = { id, lat, lng, x: lng, y: lat, demand };
         setCustomers((prev) => [...prev, customer]);
         setSolution(null);
@@ -169,7 +170,7 @@ export default function SolverPage() {
     const payload = {
       nodes: [depot, ...customers],
       depot_id: 0,
-      vehicle_capacity: vehicleCapacity,
+      vehicle_capacity: vehicleCapacity as number,
     };
 
     setIsLoading(true);
@@ -423,6 +424,7 @@ export default function SolverPage() {
                     routes={renderRoutes}
                     onMapClick={handleMapClick}
                     fitToNodesToken={fitToNodesToken}
+                    mergeEvents={solution?.merge_events || comparisonSolution?.clarke_wright.merge_events}
                   />
                 </div>
               </div>
@@ -456,7 +458,7 @@ export default function SolverPage() {
                       </div>
 
                       <ResultsSummary
-                        capacity={vehicleCapacity}
+                        capacity={vehicleCapacity as number}
                         solution={comparisonSolution.clarke_wright}
                         optimalSolution={comparisonSolution.cplex}
                         colors={colors}
@@ -465,7 +467,7 @@ export default function SolverPage() {
                     </div>
                   ) : solution && (
                     <ResultsSummary
-                      capacity={vehicleCapacity}
+                      capacity={vehicleCapacity as number}
                       solution={solution}
                       colors={colors}
                       error={error}
@@ -527,8 +529,8 @@ function ResultsSummary({
     },
     {
       label: "Solve time",
-      value: t1 != null ? `${t1} ms` : "—",
-      optValue: t2 != null ? `${t2} ms` : undefined,
+      value: t1 != null ? `${(t1 / 1000).toFixed(2)} s` : "—",
+      optValue: t2 != null ? `${(t2 / 1000).toFixed(2)} s` : undefined,
       isBetter: t2 != null && t1 != null ? t2 < t1 : false
     },
     {

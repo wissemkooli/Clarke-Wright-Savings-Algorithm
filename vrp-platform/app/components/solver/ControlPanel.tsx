@@ -5,14 +5,14 @@ import { useMemo, useRef } from "react";
 type SolverMode = "idle" | "setDepot" | "addCustomer";
 
 type Props = {
-  vehicleCapacity: number;
-  defaultDemand: number;
+  vehicleCapacity: number | string;
+  defaultDemand: number | string;
   mode: SolverMode;
   isLoading: boolean;
   statusText: string;
   disableSolve: boolean;
-  onVehicleCapacityChange: (value: number) => void;
-  onDefaultDemandChange: (value: number) => void;
+  onVehicleCapacityChange: (value: number | string) => void;
+  onDefaultDemandChange: (value: number | string) => void;
   onSetDepot: () => void;
   onAddCustomers: () => void;
   onSolve: () => void;
@@ -52,9 +52,9 @@ export function ControlPanel({
           <input
             type="number"
             id="capacity"
-            value={Number.isFinite(vehicleCapacity) ? vehicleCapacity : ""}
+            value={vehicleCapacity}
             min={1}
-            onChange={(e) => onVehicleCapacityChange(Number(e.target.value))}
+            onChange={(e) => onVehicleCapacityChange(e.target.value === "" ? "" : Number(e.target.value))}
           />
         </div>
         <div className="form-group mt-3">
@@ -62,9 +62,9 @@ export function ControlPanel({
           <input
             type="number"
             id="defaultDemand"
-            value={Number.isFinite(defaultDemand) ? defaultDemand : ""}
+            value={defaultDemand}
             min={0}
-            onChange={(e) => onDefaultDemandChange(Number(e.target.value))}
+            onChange={(e) => onDefaultDemandChange(e.target.value === "" ? "" : Number(e.target.value))}
           />
         </div>
       </div>

@@ -1,8 +1,9 @@
-# Clarke–Wright VRP Solver 🌍🚚
+# VRP Multi-Engine Solver
 
-Interactive web application that implements the **Clarke–Wright savings algorithm** to solve a capacitated Vehicle Routing Problem (VRP) on top of a real OpenStreetMap basemap. Users can set a depot and customer locations directly on the map, assign demands and vehicle capacity, then visualize optimized routes that respect capacity constraints and follow real road networks.
+An interactive, web-based application designed to solve Capacitated Vehicle Routing Problems (CVRP). The application provides a visual interface for plotting depots and customer nodes on top of OpenStreetMap, evaluating routes using both heuristic and exact optimal solvers, and visualizing the step-by-step route merging processes.
 
 ![Clarke-Wright Algorithm Demo](https://img.shields.io/badge/Algorithm-Clarke--Wright-blue)
+![IBM CPLEX](https://img.shields.io/badge/Algorithm-IBM_CPLEX-red)
 ![FastAPI](https://img.shields.io/badge/Backend-FastAPI-green)
 ![Next.js](https://img.shields.io/badge/Frontend-Next.js-blue)
 ![PostgreSQL](https://img.shields.io/badge/Database-PostgreSQL-336791)
@@ -10,147 +11,110 @@ Interactive web application that implements the **Clarke–Wright savings algori
 
 ---
 
-## 📸 Features
+## Features
 
-- 🗺️ **Interactive OpenStreetMap interface**
-  - Click to place depot and customers
-  - Visual markers with IDs and demands
-  - Real-time map interaction
+- **Multi-Engine Solving Capability**
+  - **Clarke-Wright Savings Heuristic:** A fast, iterative combinatorial algorithm that scales efficiently for larger datasets.
+  - **IBM CPLEX Exact Optimizer:** Validates the heuristic against true mathematical optimality.
+  - **Comparison Mode:** Run both algorithms concurrently to evaluate efficiency overheads, time penalties, and differences in routing paths.
 
-- 🚚 **Clarke–Wright savings algorithm**
-  - Classic VRP heuristic from operations research
-  - Haversine distance calculation for geographic coordinates
-  - Savings formula: S(i,j) = d(0,i) + d(0,j) - d(i,j)
+- **Realistic Geographic Routing (OSRM)**
+  - Replaces theoretical straight-line Haversine math with precise road driving matrices via the OSRM `/table` API.
+  - Generates realistic road-snapped polylines for vehicle paths.
 
-- 📦 **Capacity-constrained routing**
-  - Define vehicle capacity and customer demands
-  - Routes merge only if capacity permits
-  - See load per vehicle (e.g., 45/100 = 45% full)
+- **Interactive UI & Playback Engine**
+  - Click-to-place map interface leveraging React-Leaflet.
+  - Granular control over vehicle capacities and customer demands.
+  - Real-time animated playback slider that visually traverses the step-by-step merge decisions of the Clarke-Wright heuristic directly on the map.
 
-- 🛣️ **Road-following routes**
-  - Uses OSRM routing service to snap routes to real roads
-  - Smooth, realistic vehicle paths
-  - Hover tooltips show route information
-
-- 📊 **Algorithm visualization & Analytics**
-  - Top 20 savings pairs ranked
-  - Step-by-step execution log
-  - Merge decisions with capacity validation
-  - Save results to PostgreSQL database
+- **Persistent Analytics**
+  - Save routing solutions and telemetry data back to a local PostgreSQL instance for historical analysis.
 
 ---
 
-## 🚀 Quick Start
+## Technical Stack
+
+- **Backend:** Python 3.10+, FastAPI, SQLAlchemy, IBM CPLEX (docplex), HTTPX, Pandas.
+- **Frontend:** Node.js, Next.js 14 (App Router), React 18, Leaflet, Tailwind CSS.
+
+---
+
+## Installation & Setup
 
 ### Prerequisites
 
 - Python 3.8+
 - Node.js v18+
-- PostgreSQL server (running locally)
-- Internet connection (for map tiles and routing)
+- Local PostgreSQL instance
+- (Optional but recommended) IBM CPLEX Studio configured in Python environment.
 
-### Installation
+### 1. Database Configuration
+Create a `.env` file in the project root:
+```env
+DATABASE_URL=postgresql://user:password@localhost:5432/vrpdb
+```
 
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/wissemkooli/Clarke-Wright-Savings-Algorithm
-   cd Clarke-Wright-Savings-Algorithm
-   ```
+### 2. Backend Initialization
+```bash
+# Clone repository
+git clone https://github.com/wissemkooli/Clarke-Wright-Savings-Algorithm.git
+cd Clarke-Wright-Savings-Algorithm
 
-2. **Configure Database**
-   Create a `.env` file in the project root and provide your PostgreSQL connection string:
-   ```env
-   DATABASE_URL=postgresql://vrp_user:vrp_pass@localhost:5432/vrp_db
-   ```
-   Ensure the database and user exist in your PostgreSQL instance.
+# Install packages
+pip install -r requirements.txt
 
-3. **Install Backend Dependencies**
-   ```bash
-   pip install -r requirements.txt
-   pip install python-dotenv # if not included in requirements.txt
-   ```
+# Start FastAPI server
+uvicorn backend.main:app --reload
+```
+The API listens on `http://127.0.0.1:8000`.
 
-4. **Run the Backend Server**
-   ```bash
-   uvicorn backend.main:app --reload
-   ```
-   *The API will be available at http://127.0.0.1:8000*
-
-5. **Run the Next.js Frontend**
-   In a new terminal:
-   ```bash
-   cd vrp-platform
-   npm install
-   npm run dev
-   ```
-   *The interactive UI will be available at http://localhost:3000*
+### 3. Frontend Initialization
+In a secondary terminal:
+```bash
+cd vrp-platform
+npm install
+npm run dev
+```
+Access the client at `http://localhost:3000`.
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 Clarke-Wright-Savings-Algorithm/
 ├── backend/
-│   ├── main.py              # FastAPI server + Clarke-Wright algorithm
-│   ├── database.py          # PostgreSQL configuration
-│   └── models.py            # SQLAlchemy schema definitions
-├── vrp-platform/            # Next.js 14 Frontend UI (App Router)
-│   ├── app/                 # Next.js application routes (/solver, /analytics, etc)
-│   ├── public/              # Static frontend assets
-│   ├── components/          # Reusable React components
-│   └── package.json
-├── requirements.txt         # Python dependencies
-└── README.md
+│   ├── main.py                 # Application entry point and CORS definition
+│   ├── database.py             # PostgreSQL session scoping
+│   ├── models.py               # ORM structured tables
+│   ├── routers/                # FastAPI endpoint groups (solver, results, predictions)
+│   └── services/               # Core business logic
+│       ├── clarke_wright.py    # Asynchronous heuristic engine & map state generation
+│       ├── cplex_solver.py     # Deterministic routing logic
+│       └── osrm.py             # HTTP clients handling routing network maps
+├── vrp-platform/
+│   ├── app/                    # Next.js 14 file-based routing and page components
+│   ├── public/                 # Static assets
+│   ├── components/             # Reusable UI boundaries (MapView, ControlPanel, etc)
+│   └── tailwind.config.ts      # CSS taxonomy
+└── requirements.txt
 ```
 
 ---
 
-## 🎮 How to Use
+## Usage
 
-### Step 1: Set Depot
-1. Navigate to http://localhost:3000/solver
-2. Click **"Set Depot (click map)"**
-3. Click anywhere on the map to place the depot (🔴 red marker)
-
-### Step 2: Add Customers
-1. Adjust **"Customer Demand"** if needed (default: 15)
-2. Click **"Add Customers (click map)"**
-3. Click on the map to add customers (🔵 blue markers)
-4. Each customer shows their ID and demand
-
-### Step 3: Configure Vehicle & Solve
-1. Set **"Vehicle Capacity"**
-2. Click **"Solve with Clarke-Wright"**
-3. Routes will automatically appear on the map
-
-### Step 4: Analyze & Store Results
-- View execution logs and highest savings in the results sections.
-- Results and analytics can be pushed to the PostgreSQL persistence layer.
+1. **Initialize Map:** Navigate to `/solver` and select "Set Depot" to establish the origin node.
+2. **Assign Nodes:** Select "Add Customers" to populate the delivery field.
+3. **Configure Limits:** Set the shared `Vehicle Capacity` constraints to control density per truck.
+4. **Solve:** Toggle the required algorithms (Heuristic, CPLEX, or Both) and execute.
+5. **Inspect:** Use the timeline slider in the top right of the map output to visualize step-by-step route merging behaviors.
 
 ---
 
-## 🧮 Clarke–Wright Algorithm Explained
-The Clarke–Wright savings algorithm is a heuristic for solving the Vehicle Routing Problem. It starts by assuming every node has a dedicated vehicle and calculates the "savings" created by joining routes based on distance: `S(i,j) = d(0,i) + d(0,j) - d(i,j)`.
+## License
 
-Merges are executed iteratively from highest savings downwards, strictly confirming that aggregated customer demands do not breach vehicle capacity constraints.
+This architecture is published under the MIT License. Reference `LICENSE` for exact distribution terms.
 
----
-
-## 🛠️ Technical Details
-- **Backend (FastAPI, Python)**: Haversine distance functions, Pydantic type-safe validation, asynchronous routing calls, SQLAlchemy ORM mappings for Postgres integration.
-- **Frontend (Next.js 14, React)**: Server-side rendering capable Next.js structure, Tailwind CSS for agile UI engineering, React Leaflet ecosystem for complex DOM layering maps.
-- **Routing**: Uses OSRM open routing data for realistic road-path visualizations constraints.
-
----
-
-## 👨‍💻 Author
-
-**Wissem Kooli**
-- GitHub: [@wissemkooli](https://github.com/wissemkooli)
-- Project: [Clarke-Wright-Savings-Algorithm](https://github.com/wissemkooli/Clarke-Wright-Savings-Algorithm)
-
----
-
-## 📄 License
-This project is licensed under the MIT License - see the LICENSE file for details.
+**Wissem Kooli**  
+[@wissemkooli](https://github.com/wissemkooli)

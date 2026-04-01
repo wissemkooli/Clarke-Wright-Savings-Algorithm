@@ -2,6 +2,8 @@ import math
 from typing import List
 from fastapi import HTTPException
 from backend.schemas.vrp import Node, Route, VRPResponse
+from backend.services.osrm import get_osrm_table, get_osrm_route
+import asyncio
 
 
 def calculate_distance(node1: Node, node2: Node) -> float:
@@ -17,8 +19,9 @@ def calculate_distance(node1: Node, node2: Node) -> float:
     return R * c
 
 
-def clarke_wright_algorithm(nodes: List[Node], depot_id: int, capacity: float) -> VRPResponse:
+async def clarke_wright_algorithm(nodes: List[Node], depot_id: int, capacity: float) -> VRPResponse:
     steps = []
+    merge_events = []
     depot = next((n for n in nodes if n.id == depot_id), None)
     if depot is None:
         raise HTTPException(status_code=400, detail=f"Depot ID {depot_id} not found in nodes.")
@@ -37,12 +40,16 @@ def clarke_wright_algorithm(nodes: List[Node], depot_id: int, capacity: float) -
 
     customer_dict = {c.id: c for c in customers}
 
-    steps.append("Step 1: Calculating distance matrix using Haversine formula")
+    steps.append("Step 1: Calculating distance matrix using OSRM Table API")
+    table_res = await get_osrm_table([(n.lat, n.lng) for n in nodes])
+    distances_km = table_res.get("distances", []) if table_res.get("ok") else []
+
     distances = {}
     for i in range(len(nodes)):
         for j in range(len(nodes)):
             if i != j:
-                distances[(nodes[i].id, nodes[j].id)] = calculate_distance(nodes[i], nodes[j])
+                d = distances_km[i][j] if i < len(distances_km) and j < len(distances_km[i]) else -1
+                distances[(nodes[i].id, nodes[j].id)] = d if d >= 0 else calculate_distance(nodes[i], nodes[j])
 
     steps.append("Step 2: Calculating savings for all customer pairs")
     savings = []
@@ -64,8 +71,26 @@ def clarke_wright_algorithm(nodes: List[Node], depot_id: int, capacity: float) -
     savings.sort(key=lambda x: x['saving'], reverse=True)
     steps.append(f"Step 3: Sorted {len(savings)} savings in descending order")
 
+    node_map = {n.id: n for n in nodes}
+    async def fetch_geom(route_ids):
+        waypoints = [(depot.lat, depot.lng)] + [(node_map[cid].lat, node_map[cid].lng) for cid in route_ids] + [(depot.lat, depot.lng)]
+        osrm = await get_osrm_route(waypoints)
+        return osrm.get("coordinates", [])
+
     routes = [{'customers': [c.id], 'demand': c.demand} for c in customers]
+    geom_tasks = [fetch_geom(r['customers']) for r in routes]
+    geoms = await asyncio.gather(*geom_tasks)
+    for r, geom in zip(routes, geoms):
+        r['geometry'] = geom
+
     steps.append(f"Step 4: Initialized {len(routes)} individual routes with capacity {capacity}")
+
+    merge_events.append({
+        "i": -1,
+        "j": -1,
+        "routes": [r['customers'].copy() for r in routes],
+        "geometries": [r['geometry'] for r in routes]
+    })
 
     steps.append("Step 5: Merging routes based on savings...")
     merges = 0
@@ -102,6 +127,7 @@ def clarke_wright_algorithm(nodes: List[Node], depot_id: int, capacity: float) -
                     continue
 
                 new_route = {'customers': new_customers, 'demand': combined_demand}
+                new_route['geometry'] = await fetch_geom(new_customers)
 
                 if route_i_idx > route_j_idx:
                     routes.pop(route_i_idx)
@@ -112,6 +138,12 @@ def clarke_wright_algorithm(nodes: List[Node], depot_id: int, capacity: float) -
 
                 routes.append(new_route)
                 merges += 1
+                merge_events.append({
+                    "i": i,
+                    "j": j,
+                    "routes": [r['customers'].copy() for r in routes],
+                    "geometries": [r['geometry'] for r in routes]
+                })
                 steps.append(f"  ✓ Merged customers {i} and {j} | Combined demand: {combined_demand:.1f}/{capacity} | Saving: {saving['saving']:.2f} km")
             else:
                 steps.append(f"  ✗ Cannot merge {i} and {j} | Would exceed capacity: {combined_demand:.1f} > {capacity}")
@@ -140,5 +172,6 @@ def clarke_wright_algorithm(nodes: List[Node], depot_id: int, capacity: float) -
         routes=final_routes,
         total_distance=round(total_dist, 2),
         savings_table=savings[:20],
-        steps=steps
+        steps=steps,
+        merge_events=merge_events
     )
