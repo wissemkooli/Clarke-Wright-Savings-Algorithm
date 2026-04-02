@@ -1,9 +1,54 @@
 import type { Node, VRPRequest, VRPResponse } from "../types/vrp";
 
 const API_URL = "http://localhost:8000";
+const MAX_RETRIES = 3;
+const INITIAL_DELAY_MS = 500;
+
+/**
+ * Retry logic with exponential backoff.
+ * Retries on network errors and 5xx server errors.
+ */
+async function fetchWithRetry(
+  url: string,
+  options: RequestInit,
+  retries: number = MAX_RETRIES
+): Promise<Response> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const response = await fetch(url, options);
+
+      // Don't retry on 4xx errors (client mistakes), only on 5xx (server errors)
+      if (response.ok || (response.status >= 400 && response.status < 500)) {
+        return response;
+      }
+
+      // 5xx error: eligible for retry
+      if (attempt < retries && response.status >= 500) {
+        const delay = INITIAL_DELAY_MS * Math.pow(2, attempt);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        continue;
+      }
+
+      return response;
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+
+      // Retry on network errors
+      if (attempt < retries) {
+        const delay = INITIAL_DELAY_MS * Math.pow(2, attempt);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        continue;
+      }
+    }
+  }
+
+  throw lastError || new Error("Failed to fetch after retries");
+}
 
 export async function solveClarkeWright(request: VRPRequest): Promise<VRPResponse> {
-  const response = await fetch(`${API_URL}/api/solve/clarke-wright`, {
+  const response = await fetchWithRetry(`${API_URL}/api/solve/clarke-wright`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request),
@@ -79,7 +124,7 @@ async function parseFastApiError(response: Response): Promise<string> {
 }
 
 export async function solveCplex(request: VRPRequest): Promise<VRPResponse> {
-  const response = await fetch(`${API_URL}/api/solve/cplex`, {
+  const response = await fetchWithRetry(`${API_URL}/api/solve/cplex`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request),
@@ -94,7 +139,7 @@ export async function solveCplex(request: VRPRequest): Promise<VRPResponse> {
 }
 
 export async function solveCompare(request: VRPRequest): Promise<{ clarke_wright: VRPResponse, cplex: VRPResponse }> {
-  const response = await fetch(`${API_URL}/api/solve/compare`, {
+  const response = await fetchWithRetry(`${API_URL}/api/solve/compare`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request),

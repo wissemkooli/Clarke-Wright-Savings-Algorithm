@@ -1,14 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import type { Node, Route as VrpRoute, VRPResponse } from "../types/vrp";
-import { solveClarkeWright, solveCplex, solveCompare } from "../services/vrpApi";
+import type { Node, VRPResponse } from "../types/vrp";
 import { ControlPanel } from "../components/solver/ControlPanel";
 import { NodesList } from "../components/solver/NodesList";
 import { SavingsTable } from "../components/solver/SavingsTable";
 import { AlgorithmSteps } from "../components/solver/AlgorithmSteps";
+import { useVrpSolver, useCsvParser, useMapController } from "../hooks";
 
 // Defining comparison type locally since vrp.ts wasn't updated
 type VRPComparisonResponse = {
@@ -16,35 +16,41 @@ type VRPComparisonResponse = {
   cplex: VRPResponse;
 };
 
-type RenderRoute = VrpRoute & {
-  color: string;
-  polyline: Array<[number, number]>;
-};
-
 const MapView = dynamic(() => import("../components/solver/MapView").then((m) => m.MapView), {
   ssr: false,
 });
 
 export default function SolverPage() {
-  const nextCustomerId = useRef(1);
-  const [mode, setMode] = useState<"idle" | "setDepot" | "addCustomer">("idle");
-  const [depot, setDepot] = useState<Node | null>(null);
-  const [customers, setCustomers] = useState<Node[]>([]);
   const [vehicleCapacity, setVehicleCapacity] = useState<number | "">(100);
   const [defaultDemand, setDefaultDemand] = useState<number | "">(15);
-
-  // Algorithm State
   const [activeAlgs, setActiveAlgs] = useState<string[]>(["clarke-wright"]);
-
   const [activeTab, setActiveTab] = useState<"savings" | "steps">("savings");
-  const [statusText, setStatusText] = useState<string>('Click "Set depot" to start.');
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const [solution, setSolution] = useState<VRPResponse | null>(null);
-  const [comparisonSolution, setComparisonSolution] = useState<VRPComparisonResponse | null>(null);
-  const [renderRoutes, setRenderRoutes] = useState<RenderRoute[]>([]);
   const [fitToNodesToken, setFitToNodesToken] = useState<number>(0);
+
+  // Map controller hook
+  const {
+    mode,
+    depot,
+    customers,
+    handleMapClick,
+    deleteCustomer,
+    setDepotMode,
+    setAddCustomerMode,
+    resetMap,
+    setMapData,
+  } = useMapController(defaultDemand, (msg) => solver.setStatusText(msg));
+
+  // Colors for routes
+  const colors = useMemo(
+    () => ["#e74c3c", "#3498db", "#2ecc71", "#f39c12", "#9b59b6", "#1abc9c", "#e67e22", "#34495e"],
+    [],
+  );
+
+  // VRP solver hook
+  const solver = useVrpSolver(depot, customers, vehicleCapacity as number, activeAlgs, colors);
+
+  // CSV parser hook
+  const { importFromCsvText, exportToCsv } = useCsvParser(solver.setStatusText);
 
   useEffect(() => {
     document.title = "Solver · VRP Lab";
@@ -69,225 +75,10 @@ export default function SolverPage() {
   }, [customers, vehicleCapacity]);
 
   const disableSolve = useMemo(() => {
-    const baseDisable = !depot || customers.length < 2 || isLoading || activeAlgs.length === 0;
+    const baseDisable = !depot || customers.length < 2 || solver.isLoading || activeAlgs.length === 0;
     const badCapacity = vehicleCapacity === "" || !Number.isFinite(vehicleCapacity) || (vehicleCapacity as number) <= 0;
     return baseDisable || badCapacity || capacityViolationMessage !== null;
-  }, [activeAlgs.length, capacityViolationMessage, customers.length, depot, isLoading, vehicleCapacity]);
-
-  const clearAll = useCallback(() => {
-    setDepot(null);
-    setCustomers([]);
-    nextCustomerId.current = 1;
-    setMode("idle");
-    setSolution(null);
-    setComparisonSolution(null);
-    setRenderRoutes([]);
-    setError(null);
-    setStatusText('Click "Set depot" to start');
-  }, []);
-
-  const exportToCsv = useCallback(() => {
-    if (!depot) {
-      setStatusText("Export failed: no depot set.");
-      return;
-    }
-
-    const rows = [
-      `${depot.lat},${depot.lng}`,
-      ...customers.map((c) => `${c.lat},${c.lng},${c.demand}`),
-    ];
-
-    const csvContent = rows.join("\n");
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `vrp_export_${new Date().toISOString().replace(/[:.]/g, "-")}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-    setStatusText(`CSV export ready (${customers.length} customer(s)).`);
-  }, [customers, depot]);
-
-  const handleMapClick = useCallback(
-    (lat: number, lng: number) => {
-      if (mode === "setDepot") {
-        const node: Node = { id: 0, lat, lng, x: lng, y: lat, demand: 0 };
-        setDepot(node);
-        setMode("idle");
-        setSolution(null);
-        setComparisonSolution(null);
-        setRenderRoutes([]);
-        setError(null);
-        setStatusText("Depot set! Now add customers.");
-        return;
-      }
-
-      if (mode === "addCustomer") {
-        const id = nextCustomerId.current++;
-        const demand = typeof defaultDemand === "number" && defaultDemand >= 0 ? Math.trunc(defaultDemand) : 0;
-        const customer: Node = { id, lat, lng, x: lng, y: lat, demand };
-        setCustomers((prev) => [...prev, customer]);
-        setSolution(null);
-        setComparisonSolution(null);
-        setRenderRoutes([]);
-        setError(null);
-        setStatusText("Customer added! Add more or click Solve.");
-      }
-    },
-    [defaultDemand, mode],
-  );
-
-  const deleteCustomer = useCallback((customerId: number) => {
-    setCustomers((prev) => prev.filter((c) => c.id !== customerId));
-  }, []);
-
-  const colors = useMemo(
-    () => ["#e74c3c", "#3498db", "#2ecc71", "#f39c12", "#9b59b6", "#1abc9c", "#e67e22", "#34495e"],
-    [],
-  );
-
-  const buildRenderRoutes = useCallback(
-    (data: VRPResponse) => {
-      if (!depot) return;
-      const rendered: RenderRoute[] = data.routes
-        .filter((route) => route.geometry?.length)
-        .map((route, idx) => ({
-          ...route,
-          color: colors[idx % colors.length]!,
-          polyline: route.geometry,
-        }));
-      setRenderRoutes(rendered);
-      setStatusText(` Solution complete! ${data.routes.length} vehicles used.`);
-    },
-    [colors, depot],
-  );
-
-  const solve = useCallback(async () => {
-    if (!depot || customers.length < 2 || capacityViolationMessage) return;
-
-    const payload = {
-      nodes: [depot, ...customers],
-      depot_id: 0,
-      vehicle_capacity: vehicleCapacity as number,
-    };
-
-    setIsLoading(true);
-    setError(null);
-    setRenderRoutes([]);
-    setSolution(null);
-    setComparisonSolution(null);
-
-    const isCW = activeAlgs.includes("clarke-wright");
-    const isCplex = activeAlgs.includes("cplex");
-
-    // Temporary storage for results as they arrive
-    let cwRes: VRPResponse | null = null;
-    let cpRes: VRPResponse | null = null;
-
-    // Helper to merge and plot routes
-    const updateMap = () => {
-      const combined: RenderRoute[] = [];
-
-      // Add Clarke-Wright (Heuristic) - Plotted in Orange/Dimmed
-      if (cwRes) {
-        combined.push(...cwRes.routes.map((r, i) => ({
-          ...r,
-          // If comparing, make CW orange. If solo, use standard colors.
-          color: (isCW && isCplex) ? "#f39c12" : colors[i % colors.length],
-          polyline: r.geometry,
-        })));
-      }
-
-      // Add CPLEX (Optimal) - Plotted in Blue/Bold
-      if (cpRes) {
-        combined.push(...cpRes.routes.map((r, i) => ({
-          ...r,
-          color: (isCW && isCplex) ? "#3498db" : colors[i % colors.length],
-          polyline: r.geometry,
-        })));
-      }
-      setRenderRoutes(combined);
-    };
-
-    try {
-      // 🔥 Start both at the same time, but handle them as they finish
-      const cwPromise = isCW ? solveClarkeWright(payload).then(data => {
-        cwRes = data;
-        if (!cpRes) {
-          setSolution(data); // Show CW stats while waiting
-          setStatusText("Heuristic found! Waiting for CPLEX to optimize...");
-        }
-        updateMap();
-      }) : Promise.resolve();
-
-      const cpPromise = isCplex ? solveCplex(payload).then(data => {
-        cpRes = data;
-        setSolution(data); // Final stats show the Optimal result
-        updateMap();
-      }) : Promise.resolve();
-
-      // Wait for the slow one to finish for the final comparison card
-      await Promise.all([cwPromise, cpPromise]);
-
-      if (cwRes && cpRes) {
-        setComparisonSolution({ clarke_wright: cwRes, cplex: cpRes });
-        setStatusText("Comparison complete! Heuristic (Orange) vs Optimal (Blue)");
-      } else {
-        setStatusText("Solution complete!");
-      }
-
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      setError(message);
-      setStatusText(message);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [activeAlgs, colors, capacityViolationMessage, customers, depot, vehicleCapacity]);
-  const importFromCsvText = useCallback(
-    (text: string) => {
-      const parsed = parseVrpCsv(text);
-      if (parsed.error) {
-        setStatusText(`CSV error: ${parsed.error}`);
-        return;
-      }
-      if (!parsed.depot || !parsed.customers) {
-        setStatusText("CSV error: Could not parse depot/customers.");
-        return;
-      }
-
-      const depotNode: Node = {
-        id: 0,
-        lat: parsed.depot.lat,
-        lng: parsed.depot.lng,
-        x: parsed.depot.lng,
-        y: parsed.depot.lat,
-        demand: 0,
-      };
-      const customerNodes: Node[] = parsed.customers.map((c, idx) => ({
-        id: idx + 1,
-        lat: c.lat,
-        lng: c.lng,
-        x: c.lng,
-        y: c.lat,
-        demand: c.demand,
-      }));
-
-      setDepot(depotNode);
-      setCustomers(customerNodes);
-      nextCustomerId.current = customerNodes.length + 1;
-      setMode("idle");
-      setSolution(null);
-      setComparisonSolution(null);
-      setRenderRoutes([]);
-      setError(null);
-      setFitToNodesToken((t) => t + 1);
-      setStatusText(`CSV import: loaded depot and ${customerNodes.length} customer(s).`);
-    },
-    [],
-  );
+  }, [activeAlgs.length, capacityViolationMessage, customers.length, depot, solver.isLoading, vehicleCapacity]);
 
   const nodeCount = (depot ? 1 : 0) + customers.length;
 
@@ -296,6 +87,56 @@ export default function SolverPage() {
       prev.includes(id) ? prev.filter(a => a !== id) : [...prev, id]
     );
   };
+
+  const handleClearAll = useCallback(() => {
+    resetMap();
+    solver.clearSolution();
+    solver.setStatusText('Click "Set depot" to start');
+  }, [resetMap, solver]);
+
+  const handleImportCsv = useCallback((csvText: string) => {
+    if (!csvText) {
+      solver.setStatusText("Could not read CSV file.");
+      return;
+    }
+    const parsed = parseVrpCsv(csvText);
+    if (parsed.error) {
+      solver.setStatusText(`CSV error: ${parsed.error}`);
+      return;
+    }
+    if (!parsed.depot || !parsed.customers) {
+      solver.setStatusText("CSV error: Could not parse depot/customers.");
+      return;
+    }
+
+    const depotNode: Node = {
+      id: 0,
+      lat: parsed.depot.lat,
+      lng: parsed.depot.lng,
+      x: parsed.depot.lng,
+      y: parsed.depot.lat,
+      demand: 0,
+    };
+
+    const customerNodes: Node[] = parsed.customers.map((c, idx) => ({
+      id: idx + 1,
+      lat: c.lat,
+      lng: c.lng,
+      x: c.lng,
+      y: c.lat,
+      demand: c.demand,
+    }));
+
+    solver.clearSolution();
+    solver.setError(null);
+    setMapData(depotNode, customerNodes);
+    setFitToNodesToken((t) => t + 1);
+    solver.setStatusText(`CSV import: loaded depot and ${customerNodes.length} customer(s).`);
+  }, [setMapData, solver]);
+
+  const handleExportCsv = useCallback(() => {
+    exportToCsv(depot, customers);
+  }, [depot, customers, exportToCsv]);
 
   return (
     <>
@@ -344,29 +185,17 @@ export default function SolverPage() {
                 vehicleCapacity={vehicleCapacity}
                 defaultDemand={defaultDemand}
                 mode={mode}
-                isLoading={isLoading}
-                statusText={statusText}
+                isLoading={solver.isLoading}
+                statusText={solver.statusText}
                 disableSolve={disableSolve}
-                onVehicleCapacityChange={(v) => setVehicleCapacity(v)}
-                onDefaultDemandChange={(v) => setDefaultDemand(v)}
-                onSetDepot={() => {
-                  setMode("setDepot");
-                  setStatusText("Click on the map to set depot location");
-                }}
-                onAddCustomers={() => {
-                  setMode("addCustomer");
-                  setStatusText("Click on the map to add customers");
-                }}
-                onSolve={solve}
-                onClear={clearAll}
-                onImportCsvText={(csvText) => {
-                  if (!csvText) {
-                    setStatusText("Could not read CSV file.");
-                    return;
-                  }
-                  importFromCsvText(csvText);
-                }}
-                onExportCsv={exportToCsv}
+                onVehicleCapacityChange={(v) => setVehicleCapacity(v as number | "")}
+                onDefaultDemandChange={(v) => setDefaultDemand(v as number | "")}
+                onSetDepot={setDepotMode}
+                onAddCustomers={setAddCustomerMode}
+                onSolve={solver.solve}
+                onClear={handleClearAll}
+                onImportCsvText={handleImportCsv}
+                onExportCsv={handleExportCsv}
                 disableExportCsv={!depot || customers.length === 0}
               />
 
@@ -379,7 +208,7 @@ export default function SolverPage() {
                 </div>
               </div>
 
-              <div className="vrp-panel flex-shrink-0 flex flex-col overflow-hidden" style={{ display: (solution || comparisonSolution) ? "flex" : "none" }}>
+              <div className="vrp-panel flex-shrink-0 flex flex-col overflow-hidden" style={{ display: (solver.solution || solver.comparisonSolution) ? "flex" : "none" }}>
                 <div className="tabs pb-3 flex flex-wrap gap-2">
                   <button
                     className={`tab-btn flex-1 text-xs px-2 py-1.5 whitespace-nowrap ${activeTab === "savings" ? "active" : ""}`}
@@ -402,12 +231,12 @@ export default function SolverPage() {
                 <div className="tab-content relative flex-grow overflow-y-auto overflow-x-auto custom-scrollbar max-h-[400px]">
                   <div id="savings-tab" className={`tab-pane ${activeTab === "savings" ? "active" : ""}`}>
                     <div id="savingsTable" className="text-[var(--text-muted)] text-[11px] min-w-[280px] pb-2">
-                      <SavingsTable savings={comparisonSolution?.clarke_wright.savings_table ?? solution?.savings_table ?? []} />
+                      <SavingsTable savings={solver.comparisonSolution?.clarke_wright.savings_table ?? solver.solution?.savings_table ?? []} />
                     </div>
                   </div>
                   <div id="steps-tab" className={`tab-pane ${activeTab === "steps" ? "active" : ""}`}>
                     <div id="stepsContent" className="text-[var(--text-muted)] text-[11px] min-w-[280px]">
-                      <AlgorithmSteps steps={comparisonSolution?.clarke_wright.steps ?? solution?.steps ?? []} />
+                      <AlgorithmSteps steps={solver.comparisonSolution?.clarke_wright.steps ?? solver.solution?.steps ?? []} />
                     </div>
                   </div>
                 </div>
@@ -421,19 +250,19 @@ export default function SolverPage() {
                     depot={depot}
                     customers={customers}
                     mode={mode}
-                    routes={renderRoutes}
+                    routes={solver.renderRoutes}
                     onMapClick={handleMapClick}
                     fitToNodesToken={fitToNodesToken}
-                    mergeEvents={solution?.merge_events || comparisonSolution?.clarke_wright.merge_events}
-                    edgeGeometries={solution?.edge_geometries || comparisonSolution?.clarke_wright.edge_geometries}
+                    mergeEvents={solver.solution?.merge_events || solver.comparisonSolution?.clarke_wright.merge_events}
+                    edgeGeometries={solver.solution?.edge_geometries || solver.comparisonSolution?.clarke_wright.edge_geometries}
                   />
                 </div>
               </div>
 
-              <div className="vrp-panel mt-5 flex-grow flex-col lg:mt-6 overflow-hidden" id="resultsSection" style={{ display: (solution || comparisonSolution) ? "flex" : "none" }}>
+              <div className="vrp-panel mt-5 flex-grow flex-col lg:mt-6 overflow-hidden" id="resultsSection" style={{ display: (solver.solution || solver.comparisonSolution) ? "flex" : "none" }}>
                 <h2 className="vrp-panel-title flex-shrink-0">Results</h2>
                 <div id="results" className="overflow-y-auto custom-scrollbar pr-2 flex-grow">
-                  {comparisonSolution ? (
+                  {solver.comparisonSolution ? (
                     <div className="space-y-4">
                       {/* Comparison Quick-View Card */}
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4" style={{
@@ -445,14 +274,14 @@ export default function SolverPage() {
                       }}>
                         <div>
                           <div style={{ color: "#888", fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: "0.5px" }}>Heuristic (Clarke-Wright)</div>
-                          <div style={{ color: "#fff", fontWeight: 700, fontSize: "1.2rem", marginTop: "4px" }}>{comparisonSolution.clarke_wright.total_road_distance_km?.toFixed(2)} km</div>
+                          <div style={{ color: "#fff", fontWeight: 700, fontSize: "1.2rem", marginTop: "4px" }}>{solver.comparisonSolution.clarke_wright.total_road_distance_km?.toFixed(2)} km</div>
                         </div>
                         <div className="flex flex-col">
                           <div style={{ color: "#60a5fa", fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: "0.5px" }}>Optimal (CPLEX)</div>
-                          <div style={{ color: "#4ade80", fontWeight: 700, fontSize: "1.2rem", marginTop: "4px" }}>{comparisonSolution.cplex.total_road_distance_km?.toFixed(2)} km</div>
+                          <div style={{ color: "#4ade80", fontWeight: 700, fontSize: "1.2rem", marginTop: "4px" }}>{solver.comparisonSolution.cplex.total_road_distance_km?.toFixed(2)} km</div>
                           <div className="mt-2 text-xs text-gray-400">
                             Efficiency Gain: <span className="text-green-400 font-bold ml-1">
-                              {(((comparisonSolution.clarke_wright.total_road_distance_km || 0) - (comparisonSolution.cplex.total_road_distance_km || 0)) / (comparisonSolution.clarke_wright.total_road_distance_km || 1) * 100).toFixed(1)}%
+                              {(((solver.comparisonSolution.clarke_wright.total_road_distance_km || 0) - (solver.comparisonSolution.cplex.total_road_distance_km || 0)) / (solver.comparisonSolution.clarke_wright.total_road_distance_km || 1) * 100).toFixed(1)}%
                             </span>
                           </div>
                         </div>
@@ -460,18 +289,18 @@ export default function SolverPage() {
 
                       <ResultsSummary
                         capacity={vehicleCapacity as number}
-                        solution={comparisonSolution.clarke_wright}
-                        optimalSolution={comparisonSolution.cplex}
+                        solution={solver.comparisonSolution.clarke_wright}
+                        optimalSolution={solver.comparisonSolution.cplex}
                         colors={colors}
-                        error={error}
+                        error={solver.error}
                       />
                     </div>
-                  ) : solution && (
+                  ) : solver.solution && (
                     <ResultsSummary
                       capacity={vehicleCapacity as number}
-                      solution={solution}
+                      solution={solver.solution}
                       colors={colors}
-                      error={error}
+                      error={solver.error}
                     />
                   )}
                 </div>
