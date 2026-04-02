@@ -1,177 +1,178 @@
 import math
-from typing import List
+from typing import List, Dict
 from fastapi import HTTPException
 from backend.schemas.vrp import Node, Route, VRPResponse
-from backend.services.osrm import get_osrm_table, get_osrm_route
+from backend.services.osrm import get_osrm_table, get_osrm_route_legs
 import asyncio
+import time
 
 
 def calculate_distance(node1: Node, node2: Node) -> float:
+    """Haversine distance in km."""
     R = 6371
-    lat1_rad = math.radians(node1.lat)
-    lat2_rad = math.radians(node2.lat)
-    delta_lat = math.radians(node2.lat - node1.lat)
-    delta_lng = math.radians(node2.lng - node1.lng)
+    lat1_rad, lat2_rad = math.radians(node1.lat), math.radians(node2.lat)
+    delta_lat, delta_lng = math.radians(node2.lat - node1.lat), math.radians(node2.lng - node1.lng)
     a = (math.sin(delta_lat / 2) ** 2 +
-         math.cos(lat1_rad) * math.cos(lat2_rad) *
-         math.sin(delta_lng / 2) ** 2)
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return R * c
+         math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(delta_lng / 2) ** 2)
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
 async def clarke_wright_algorithm(nodes: List[Node], depot_id: int, capacity: float) -> VRPResponse:
+    start_time = time.perf_counter()
     steps = []
     merge_events = []
     depot = next((n for n in nodes if n.id == depot_id), None)
-    if depot is None:
-        raise HTTPException(status_code=400, detail=f"Depot ID {depot_id} not found in nodes.")
+    if not depot:
+        raise HTTPException(status_code=400, detail=f"Depot ID {depot_id} not found.")
 
     customers = [n for n in nodes if n.id != depot_id]
-
     violations = [c for c in customers if c.demand > capacity]
     if violations:
-        if len(violations) == 1:
-            c = violations[0]
-            msg = f"Customer {c.id} has demand {c.demand} which exceeds vehicle capacity {capacity}."
-        else:
-            parts = [f"customer {c.id} (demand {c.demand})" for c in violations]
-            msg = f"The following customers exceed vehicle capacity ({capacity}): {', '.join(parts)}."
+        msg = f"Demand exceeds capacity ({capacity})"
         raise HTTPException(status_code=400, detail=msg)
 
-    customer_dict = {c.id: c for c in customers}
+    node_map = {n.id: n for n in nodes}
 
-    steps.append("Step 1: Calculating distance matrix using OSRM Table API")
-    table_res = await get_osrm_table([(n.lat, n.lng) for n in nodes])
-    distances_km = table_res.get("distances", []) if table_res.get("ok") else []
+    # ── Step 1: Haversine Table ──
+    h_dist: dict[tuple, float] = {}
+    for ni in nodes:
+        for nj in nodes:
+            if ni.id != nj.id:
+                h_dist[(ni.id, nj.id)] = calculate_distance(ni, nj)
 
-    distances = {}
-    for i in range(len(nodes)):
-        for j in range(len(nodes)):
-            if i != j:
-                d = distances_km[i][j] if i < len(distances_km) and j < len(distances_km[i]) else -1
-                distances[(nodes[i].id, nodes[j].id)] = d if d >= 0 else calculate_distance(nodes[i], nodes[j])
-
-    steps.append("Step 2: Calculating savings for all customer pairs")
+    # ── Step 2-6: Merge Algorithm ──
     savings = []
     for i in range(len(customers)):
         for j in range(i + 1, len(customers)):
             c1, c2 = customers[i], customers[j]
-            saving_value = (distances[(depot.id, c1.id)] +
-                            distances[(depot.id, c2.id)] -
-                            distances[(c1.id, c2.id)])
-            savings.append({
-                'i': c1.id,
-                'j': c2.id,
-                'saving': round(saving_value, 2),
-                'distance_i': round(distances[(depot.id, c1.id)], 2),
-                'distance_j': round(distances[(depot.id, c2.id)], 2),
-                'distance_ij': round(distances[(c1.id, c2.id)], 2)
-            })
+            s = (h_dist[(depot.id, c1.id)] + h_dist[(depot.id, c2.id)] - h_dist[(c1.id, c2.id)])
+            savings.append({'i': c1.id, 'j': c2.id, 'saving': round(s, 2)})
 
     savings.sort(key=lambda x: x['saving'], reverse=True)
-    steps.append(f"Step 3: Sorted {len(savings)} savings in descending order")
+    
+    route_map: dict[int, list] = {idx: [c.id] for idx, c in enumerate(customers)}
+    demand_map: dict[int, float] = {idx: c.demand for idx, c in enumerate(customers)}
+    endpoints: dict[int, int] = {c.id: idx for idx, c in enumerate(customers)}
+    next_id = len(customers)
 
-    node_map = {n.id: n for n in nodes}
-    async def fetch_geom(route_ids):
-        waypoints = [(depot.lat, depot.lng)] + [(node_map[cid].lat, node_map[cid].lng) for cid in route_ids] + [(depot.lat, depot.lng)]
-        osrm = await get_osrm_route(waypoints)
-        return osrm.get("coordinates", [])
+    merge_events.append({"i": -1, "j": -1, "routes": [l.copy() for l in route_map.values()]})
 
-    routes = [{'customers': [c.id], 'demand': c.demand} for c in customers]
-    geom_tasks = [fetch_geom(r['customers']) for r in routes]
-    geoms = await asyncio.gather(*geom_tasks)
-    for r, geom in zip(routes, geoms):
-        r['geometry'] = geom
+    for sv in savings:
+        i, j = sv['i'], sv['j']
+        r_i, r_j = endpoints.get(i), endpoints.get(j)
+        if r_i is not None and r_j is not None and r_i != r_j:
+            if demand_map[r_i] + demand_map[r_j] <= capacity:
+                l_i, l_j = route_map[r_i], route_map[r_j]
+                pos_i = 0 if l_i[0] == i else -1
+                pos_j = 0 if l_j[0] == j else -1
+                
+                if pos_i == -1 and pos_j == 0: nl = l_i + l_j
+                elif pos_i == 0 and pos_j == -1: nl = l_j + l_i
+                elif pos_i == -1 and pos_j == -1: nl = l_i + l_j[::-1]
+                else: nl = l_i[::-1] + l_j
 
-    steps.append(f"Step 4: Initialized {len(routes)} individual routes with capacity {capacity}")
+                del route_map[r_i]; del route_map[r_j]
+                del demand_map[r_i]; del demand_map[r_j]
+                if i in endpoints: del endpoints[i]
+                if j in endpoints: del endpoints[j]
 
-    merge_events.append({
-        "i": -1,
-        "j": -1,
-        "routes": [r['customers'].copy() for r in routes],
-        "geometries": [r['geometry'] for r in routes]
-    })
+                route_map[next_id] = nl
+                demand_map[next_id] = sum(node_map[cid].demand for cid in nl)
+                endpoints[nl[0]] = next_id
+                endpoints[nl[-1]] = next_id
+                next_id += 1
+                merge_events.append({"i": i, "j": j, "routes": [l.copy() for l in route_map.values()]})
+                steps.append(f"Merged {i} and {j}")
 
-    steps.append("Step 5: Merging routes based on savings...")
-    merges = 0
+    # ── Step 7: Parallel OSRM fetch ──
+    osrm_table_res: dict = {}
+    edge_geom_cache: dict[tuple, list] = {}
+    edge_dur_cache: dict[tuple, float] = {}
 
-    for saving in savings:
-        i, j = saving['i'], saving['j']
-        route_i_idx = route_j_idx = pos_i = pos_j = None
+    async def fetch_table():
+        res = await get_osrm_table([(n.lat, n.lng) for n in nodes])
+        osrm_table_res.update(res)
 
-        for idx, route in enumerate(routes):
-            if i in route['customers']:
-                route_i_idx = idx
-                pos_i = 0 if route['customers'][0] == i else (len(route['customers']) - 1 if route['customers'][-1] == i else None)
-            if j in route['customers']:
-                route_j_idx = idx
-                pos_j = 0 if route['customers'][0] == j else (len(route['customers']) - 1 if route['customers'][-1] == j else None)
+    async def fetch_legs(r_list: list):
+        wp = [(depot.lat, depot.lng)] + [(node_map[cid].lat, node_map[cid].lng) for cid in r_list] + [(depot.lat, depot.lng)]
+        legs_data = await get_osrm_route_legs(wp)
+        node_seq = [depot.id] + r_list + [depot.id]
+        for k, leg_dict in enumerate(legs_data):
+            u, v = node_seq[k], node_seq[k + 1]
+            edge_geom_cache[(u, v)] = leg_dict["geometry"]
+            edge_dur_cache[(u, v)] = leg_dict["duration"]
 
-        if (route_i_idx is not None and route_j_idx is not None and
-                route_i_idx != route_j_idx and pos_i is not None and pos_j is not None):
+    t2 = time.perf_counter()
+    await asyncio.gather(fetch_table(), *[fetch_legs(rl) for rl in route_map.values()])
+    print(f"[CW TIMING] parallel_fetch={time.perf_counter()-t2:.2f}s")
 
-            route_i = routes[route_i_idx]
-            route_j = routes[route_j_idx]
-            combined_demand = route_i['demand'] + route_j['demand']
+    # Final reporting distances/durations from table
+    dist_table = osrm_table_res.get("distances", [])
+    dur_table = osrm_table_res.get("durations", [])
+    osrm_ok = osrm_table_res.get("ok") and dist_table
+    
+    road_dist: dict[tuple, float] = {}
+    road_dur: dict[tuple, float] = {}
+    
+    if osrm_ok:
+        for i, ni in enumerate(nodes):
+            for j, nj in enumerate(nodes):
+                if ni.id != nj.id:
+                    d = dist_table[i][j] if i < len(dist_table) and j < len(dist_table[i]) else -1
+                    t = dur_table[i][j] if i < len(dur_table) and j < len(dur_table[i]) else -1
+                    road_dist[(ni.id, nj.id)] = d if d >= 0 else h_dist[(ni.id, nj.id)]
+                    road_dur[(ni.id, nj.id)] = t if t >= 0 else 0
+    else:
+        road_dist = h_dist
+        road_dur = {k: 0 for k in h_dist.keys()}
 
-            if combined_demand <= capacity:
-                if pos_i == len(route_i['customers']) - 1 and pos_j == 0:
-                    new_customers = route_i['customers'] + route_j['customers']
-                elif pos_i == 0 and pos_j == len(route_j['customers']) - 1:
-                    new_customers = route_j['customers'] + route_i['customers']
-                elif pos_i == len(route_i['customers']) - 1 and pos_j == len(route_j['customers']) - 1:
-                    new_customers = route_i['customers'] + route_j['customers'][::-1]
-                elif pos_i == 0 and pos_j == 0:
-                    new_customers = route_i['customers'][::-1] + route_j['customers']
-                else:
-                    continue
-
-                new_route = {'customers': new_customers, 'demand': combined_demand}
-                new_route['geometry'] = await fetch_geom(new_customers)
-
-                if route_i_idx > route_j_idx:
-                    routes.pop(route_i_idx)
-                    routes.pop(route_j_idx)
-                else:
-                    routes.pop(route_j_idx)
-                    routes.pop(route_i_idx)
-
-                routes.append(new_route)
-                merges += 1
-                merge_events.append({
-                    "i": i,
-                    "j": j,
-                    "routes": [r['customers'].copy() for r in routes],
-                    "geometries": [r['geometry'] for r in routes]
-                })
-                steps.append(f"  ✓ Merged customers {i} and {j} | Combined demand: {combined_demand:.1f}/{capacity} | Saving: {saving['saving']:.2f} km")
-            else:
-                steps.append(f"  ✗ Cannot merge {i} and {j} | Would exceed capacity: {combined_demand:.1f} > {capacity}")
-
-    steps.append(f"Step 6: Completed {merges} merges, final routes: {len(routes)}")
+    def stitch(r_list: list) -> list:
+        geom = []
+        node_seq = [depot.id] + r_list + [depot.id]
+        for k in range(len(node_seq) - 1):
+            seg = edge_geom_cache.get((node_seq[k], node_seq[k + 1]))
+            if not seg:
+                n1, n2 = node_map[node_seq[k]], node_map[node_seq[k + 1]]
+                seg = [[n1.lat, n1.lng], [n2.lat, n2.lng]]
+            geom.extend(seg if not geom else seg[1:])
+        return geom
 
     final_routes = []
-    total_dist = 0
+    total_road_dist = 0
+    total_dur_s = 0
+    for r_id, r_list in route_map.items():
+        # Duration: sum specific legs fetched for this final route
+        r_dur = 0
+        r_dist = 0
+        node_seq = [depot.id] + r_list + [depot.id]
+        for k in range(len(node_seq) - 1):
+            pair = (node_seq[k], node_seq[k+1])
+            r_dist += road_dist.get(pair, 0)
+            r_dur += edge_dur_cache.get(pair, road_dur.get(pair, 0))
 
-    for idx, route in enumerate(routes):
-        route_distance = distances[(depot.id, route['customers'][0])]
-        for k in range(len(route['customers']) - 1):
-            route_distance += distances[(route['customers'][k], route['customers'][k + 1])]
-        route_distance += distances[(route['customers'][-1], depot.id)]
+        fr = Route(
+            customers=r_list,
+            total_demand=round(demand_map[r_id], 2),
+            total_distance=round(r_dist, 2),
+            road_distance_km=round(r_dist, 2),
+            duration_s=round(r_dur, 1),
+            geometry=stitch(r_list)
+        )
+        final_routes.append(fr)
+        total_road_dist += r_dist
+        total_dur_s += r_dur
 
-        actual_demand = sum(customer_dict[cid].demand for cid in route['customers'])
-        final_routes.append(Route(
-            customers=route['customers'],
-            total_demand=round(actual_demand, 2),
-            total_distance=round(route_distance, 2)
-        ))
-        total_dist += route_distance
-        steps.append(f"  Route {idx + 1}: {len(route['customers'])} customers, demand: {actual_demand:.1f}/{capacity}, distance: {route_distance:.2f} km")
+    string_edge_geoms = {f"{u},{v}": coords for (u, v), coords in edge_geom_cache.items()}
 
     return VRPResponse(
         routes=final_routes,
-        total_distance=round(total_dist, 2),
+        total_distance=round(total_road_dist, 2),
+        total_road_distance_km=round(total_road_dist, 2),
+        total_duration_s=round(total_dur_s, 1),
+        num_vehicles=len(final_routes),
+        computation_time_ms=round((time.perf_counter() - start_time) * 1000, 2),
         savings_table=savings[:20],
         steps=steps,
-        merge_events=merge_events
+        merge_events=merge_events,
+        edge_geometries=string_edge_geoms
     )

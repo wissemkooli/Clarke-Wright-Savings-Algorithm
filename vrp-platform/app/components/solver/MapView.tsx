@@ -19,7 +19,9 @@ type Props = {
   routes: RenderRoute[];
   onMapClick: (lat: number, lng: number) => void;
   fitToNodesToken?: number;
+  fitToNodesToken?: number;
   mergeEvents?: MergeEvent[];
+  edgeGeometries?: Record<string, Array<[number, number]>>;
 };
 
 function CustomerMarker({ node }: { node: Node }) {
@@ -72,7 +74,7 @@ function FitToNodes({ depot, customers, token }: { depot: Node | null; customers
   return null;
 }
 
-export function MapView({ depot, customers, mode, routes, onMapClick, fitToNodesToken, mergeEvents }: Props) {
+export function MapView({ depot, customers, mode, routes, onMapClick, fitToNodesToken, mergeEvents, edgeGeometries }: Props) {
   const depotIcon = useMemo(
     () =>
       L.divIcon({
@@ -110,9 +112,10 @@ export function MapView({ depot, customers, mode, routes, onMapClick, fitToNodes
   }, [routes, mergeEvents]);
 
   const displayedRoutes = useMemo(() => {
+    // If we're at the final step, just show the optimized routes as-is
     if (!mergeEvents || mergeEvents.length === 0) return routes;
     if (!isPlaying && playbackStep === mergeEvents.length - 1) return routes;
-    if (playbackStep === mergeEvents.length - 1) return routes;
+    
     if (!depot) return [];
 
     const nodeMap = new Map<number, Node>();
@@ -120,12 +123,37 @@ export function MapView({ depot, customers, mode, routes, onMapClick, fitToNodes
 
     const activeEvent = mergeEvents[playbackStep];
     const activeRouteNodes = activeEvent.routes;
-    const activeGeoms = activeEvent.geometries || [];
-
     const routeColors = ["#e74c3c", "#3498db", "#2ecc71", "#f39c12", "#9b59b6", "#1abc9c", "#e67e22", "#34495e"];
 
     return activeRouteNodes.map((customerIds, idx) => {
-      const geom = activeGeoms.length > idx ? activeGeoms[idx] : [];
+      // ── Stitch geometry for this animation frame ──
+      const geom: Array<[number, number]> = [];
+      const nodeSeq = [0, ...customerIds, 0]; // 0 is depot id
+      
+      for (let k = 0; k < nodeSeq.length - 1; k++) {
+        const u = nodeSeq[k];
+        const v = nodeSeq[k+1];
+        const edgeKey = `${u},${v}`;
+        
+        const segment = edgeGeometries?.[edgeKey];
+        if (segment && segment.length > 0) {
+          if (geom.length === 0) {
+            geom.push(...segment);
+          } else {
+            geom.push(...segment.slice(1)); // skip duplicate joint
+          }
+        } else {
+          // Fallback to straight line (only for edges not in the final road cache)
+          const n1 = u === 0 ? depot : nodeMap.get(u);
+          const n2 = v === 0 ? depot : nodeMap.get(v);
+          if (n1 && n2) {
+            const straight: [number, number][] = [[n1.lat, n1.lng], [n2.lat, n2.lng]];
+            if (geom.length === 0) geom.push(...straight);
+            else geom.push(straight[1]);
+          }
+        }
+      }
+
       let demand = 0;
       for (const cid of customerIds) {
         const c = nodeMap.get(cid);
@@ -141,7 +169,7 @@ export function MapView({ depot, customers, mode, routes, onMapClick, fitToNodes
         polyline: geom
       } as RenderRoute;
     });
-  }, [routes, mergeEvents, isPlaying, playbackStep, depot, customers]);
+  }, [routes, mergeEvents, isPlaying, playbackStep, depot, customers, edgeGeometries]);
 
   return (
     <>

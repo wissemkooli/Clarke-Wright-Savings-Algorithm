@@ -26,6 +26,7 @@ export type MergeEvent = {
   i: number;
   j: number;
   routes: number[][];
+  geometries?: [number, number][][];
 };
 
 export type SavingsRow = {
@@ -44,6 +45,7 @@ export type VRPResponse = {
   savings_table: SavingsRow[];
   steps: string[];
   merge_events?: MergeEvent[];
+  edge_geometries?: Record<string, [number, number][]>;
 };
 
 export type VRPComparisonResponse = {

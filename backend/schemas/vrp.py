@@ -5,6 +5,7 @@ class MergeEvent(BaseModel):
     i: int
     j: int
     routes: List[List[int]]
+    # Geometries are now stitched client-side from edge_geometries
     geometries: Optional[List[List[List[float]]]] = None
 
 
@@ -41,3 +42,5 @@ class VRPResponse(BaseModel):
     savings_table: List[dict]
     steps: List[str]
     merge_events: Optional[List[MergeEvent]] = None
+    # Optimized: key format "id1,id2" -> polyline
+    edge_geometries: Optional[dict[str, List[List[float]]]] = None

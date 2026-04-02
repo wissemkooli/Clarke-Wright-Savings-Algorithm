@@ -425,6 +425,7 @@ export default function SolverPage() {
                     onMapClick={handleMapClick}
                     fitToNodesToken={fitToNodesToken}
                     mergeEvents={solution?.merge_events || comparisonSolution?.clarke_wright.merge_events}
+                    edgeGeometries={solution?.edge_geometries || comparisonSolution?.clarke_wright.edge_geometries}
                   />
                 </div>
               </div>
@@ -546,7 +547,7 @@ function ResultsSummary({
       isBetter: dr2 != null && dr1 != null ? dr2 < dr1 : false
     },
     { label: "Vehicle capacity", value: capacity },
-    { label: "Status", value: isOptimal ? "OPTIMAL" : "HEURISTIC", optValue: optimalSolution ? "OPTIMAL" : undefined, highlight: isOptimal || !!optimalSolution },
+    { label: "Status", value: isOptimal ? "OPTIMAL" : "HEURISTIC", optValue: optimalSolution ? "OPTIMAL" : undefined, highlight: isOptimal },
   ];
 
   const renderRoutes = (routes: typeof solution.routes, isOpt: boolean) => (
