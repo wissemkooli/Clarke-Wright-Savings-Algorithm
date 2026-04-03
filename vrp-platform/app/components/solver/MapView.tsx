@@ -220,7 +220,7 @@ export function MapView({
           // In normal mode, inherit the route's palette color.
           let color: string;
           if (isCompareMode) {
-            color = "#cbd5e1"; // neutral slate-300
+            color = "#3d2ad2";
           } else {
             const assignedRoute = displayedRoutes.find(r => r.customers.includes(c.id));
             color = assignedRoute ? assignedRoute.color : ROUTE_PALETTE[c.id % ROUTE_PALETTE.length];
@@ -290,7 +290,7 @@ export function MapView({
             {/* Shared nodes */}
             <div className="flex items-center gap-3">
               <div className="flex-shrink-0 flex justify-center" style={{ width: 32 }}>
-                <div style={{ width: 14, height: 14, borderRadius: "50%", background: "#cbd5e1", border: "2px solid white", boxShadow: "0 1px 4px rgba(0,0,0,0.5)" }} />
+                <div style={{ width: 14, height: 14, borderRadius: "50%", background: "#3d2ad2", border: "2px solid white", boxShadow: "0 1px 4px rgba(0,0,0,0.5)" }} />
               </div>
               <div>
                 <div className="text-[11px] font-semibold text-white">Customer Node</div>
