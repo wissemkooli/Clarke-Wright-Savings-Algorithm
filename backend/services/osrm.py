@@ -60,7 +60,7 @@ async def get_osrm_route_legs(waypoints: list[tuple[float, float]]) -> list[dict
     if len(waypoints) < 2:
         return []
     coords = ";".join(f"{lng},{lat}" for lat, lng in waypoints)
-    url = f"{OSRM_BASE}/route/v1/driving/{coords}?overview=false&geometries=geojson&steps=true"
+    url = f"{OSRM_BASE}/route/v1/driving/{coords}?overview=full&geometries=geojson&steps=true"
     resp = await _get(url)
     
     # Fallback to straight lines if network fails
@@ -81,33 +81,18 @@ async def get_osrm_route_legs(waypoints: list[tuple[float, float]]) -> list[dict
 
     legs_out = []
     for i, leg in enumerate(route.get("legs", [])):
+        # Correctly extract coordinates from individual steps
         pts = []
         for step in leg.get("steps", []):
-            for lng, lat in step.get("geometry", {}).get("coordinates", []):
+            step_coords = step.get("geometry", {}).get("coordinates", [])
+            for lng, lat in step_coords:
                 p = [lat, lng]
-                if not pts or pts[-1] != [lat, lng]:
+                if not pts or pts[-1] != p:
                     pts.append(p)
+
         legs_out.append({
             "geometry": pts if pts else fallback[i]["geometry"],
             "distance": leg.get("distance", 0),
             "duration": leg.get("duration", 0)
         })
     return legs_out
-
-
-async def get_osrm_route(waypoints: list[tuple[float, float]]) -> dict:
-    """Legacy/Single route fetch."""
-    if len(waypoints) < 2: return {"ok": False}
-    coords = ";".join(f"{lng},{lat}" for lat, lng in waypoints)
-    url = f"{OSRM_BASE}/route/v1/driving/{coords}?overview=full&geometries=geojson"
-    resp = await _get(url)
-    if resp is None or not resp.is_success: return {"ok": False}
-    data = resp.json()
-    route = (data.get("routes") or [None])[0]
-    if not route: return {"ok": False}
-    return {
-        "ok": True,
-        "coordinates": [[lat, lng] for lng, lat in route["geometry"]["coordinates"]],
-        "distance_km": route["distance"] / 1000,
-        "duration_s": route["duration"]
-    }

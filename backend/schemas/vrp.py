@@ -5,8 +5,6 @@ class MergeEvent(BaseModel):
     i: int
     j: int
     routes: List[List[int]]
-    # Geometries are now stitched client-side from edge_geometries
-    geometries: Optional[List[List[List[float]]]] = None
 
 
 class Node(BaseModel):

@@ -1,12 +1,20 @@
 from docplex.mp.model import Model
 from backend.schemas.vrp import VRPRequest, VRPResponse, Route
 from backend.services.osrm import get_osrm_table, get_osrm_route_legs
-
+from backend.services.utils import process_osrm_table, stitch_route_geometry
 import time
 import asyncio
+import concurrent.futures
+
+# Module-level thread pool — CPLEX solve() is synchronous C++ and blocks the GIL.
+# Running it in a dedicated executor lets asyncio continue scheduling CW geometry
+# fetches (and other coroutines) while CPLEX solves in parallel on a real OS thread.
+_cplex_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="cplex"
+)
 
 
-async def solve_with_cplex(request: VRPRequest) -> VRPResponse:
+async def solve_with_cplex(request: VRPRequest, precomputed_table: dict = None) -> VRPResponse:
     start_time = time.perf_counter()
     nodes = request.nodes
     depot_id = request.depot_id
@@ -21,38 +29,25 @@ async def solve_with_cplex(request: VRPRequest) -> VRPResponse:
     N = len(all_nodes)
 
     # ── Step 1: OSRM distance & duration matrix ──
-    table_res = await get_osrm_table([(n.lat, n.lng) for n in all_nodes])
-    dist_table = table_res.get("distances", []) if table_res.get("ok") else []
-    dur_table = table_res.get("durations", []) if table_res.get("ok") else []
+    if precomputed_table:
+        table_res = precomputed_table
+    else:
+        table_res = await get_osrm_table([(nd.lat, nd.lng) for nd in all_nodes])
+    
+    dist, dur = process_osrm_table(table_res, all_nodes)
 
-    dist = {}
-    dur = {}
-    for i in range(N):
-        for j in range(N):
-            if i != j:
-                d = dist_table[i][j] if i < len(dist_table) and j < len(dist_table[i]) else -1
-                t = dur_table[i][j] if i < len(dur_table) and j < len(dur_table[i]) else -1
-                
-                if d < 0:
-                    # Haversine fallback for distance
-                    from math import radians, sin, cos, sqrt, atan2
-                    R = 6371
-                    lat1, lng1 = all_nodes[i].lat, all_nodes[i].lng
-                    lat2, lng2 = all_nodes[j].lat, all_nodes[j].lng
-                    dlat, dlng = radians(lat2 - lat1), radians(lng2 - lng1)
-                    a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlng / 2) ** 2
-                    d = R * 2 * atan2(sqrt(a), sqrt(1 - a))
-                    t = 0 # No duration for haversine
-                
-                dist[i, j] = d
-                dur[i, j] = t
+    # Build index-based distance lookup for CPLEX model variables (0..N-1 indexed)
+    dist_idx = {
+        (i, j): dist.get((all_nodes[i].id, all_nodes[j].id), 0)
+        for i in range(N) for j in range(N) if i != j
+    }
 
     # ── Step 2: MIP model ──
     mdl = Model(name="CVRP")
     x = {(i, j): mdl.binary_var(name=f"x_{i}_{j}") for i in range(N) for j in range(N) if i != j}
     f = {(i, j): mdl.continuous_var(lb=0, ub=Q, name=f"f_{i}_{j}") for i in range(N) for j in range(N) if i != j}
 
-    mdl.minimize(mdl.sum(dist[i, j] * x[i, j] for i, j in x))
+    mdl.minimize(mdl.sum(dist_idx[i, j] * x[i, j] for i, j in x))
     mdl.add_constraint(mdl.sum(x[0, j] for j in range(1, N)) <= m)
     mdl.add_constraint(mdl.sum(x[i, 0] for i in range(1, N)) <= m)
 
@@ -69,27 +64,39 @@ async def solve_with_cplex(request: VRPRequest) -> VRPResponse:
         mdl.add_constraint(f[i, j] <= Q * x[i, j])
 
     mdl.parameters.timelimit = 30
-    solution = mdl.solve(log_output=False)
+
+    # ── Run solve in thread pool — unblocks the asyncio event loop ──
+    # Without this, mdl.solve() holds the GIL and freezes all coroutines,
+    # making CW geometry fetches stall while CPLEX runs.
+    loop = asyncio.get_event_loop()
+    solution = await loop.run_in_executor(
+        _cplex_executor, lambda: mdl.solve(log_output=False)
+    )
 
     if solution is None:
         raise Exception("CPLEX found no solution")
 
     # ── Step 3: Extract routes ──
+    # Build a O(1) successor dict instead of scanning all arcs on every step.
+    # Old: next((j for i,j in active_arcs if i == curr), 0)  → O(arcs) per node
+    # New: succ[curr]                                          → O(1)
     active_arcs = [(i, j) for i, j in x if solution.get_value(x[i, j]) > 0.5]
+    succ = {i: j for i, j in active_arcs}
+
     raw_routes = []
-    for arc in active_arcs:
-        if arc[0] == 0:
+    for i, j in active_arcs:
+        if i == 0:
             r_indices = []
-            curr = arc[1]
+            curr = j
             while curr != 0:
                 r_indices.append(curr)
-                curr = next((j for i, j in active_arcs if i == curr), 0)
+                curr = succ.get(curr, 0)
             raw_routes.append(r_indices)
 
     # ── Step 4: Parallel OSRM Geometry & Duration Fetching ──
     edge_geom_cache: dict[tuple, list] = {}
     edge_dur_cache: dict[tuple, float] = {}
-    node_map = {n.id: n for n in nodes}
+    node_map = {nd.id: nd for nd in nodes}
 
     async def fetch_route_legs(r_indices: list):
         waypoints = [(depot.lat, depot.lng)]
@@ -114,26 +121,9 @@ async def solve_with_cplex(request: VRPRequest) -> VRPResponse:
         customer_ids = [all_nodes[idx].id for idx in r_indices]
         total_demand = sum(all_nodes[idx].demand for idx in r_indices)
         
-        # Calculate route-level road telemetry
-        r_dist = 0
-        r_dur = 0
         node_seq_ids = [depot.id] + customer_ids + [depot.id]
-        node_seq_idxs = [0] + r_indices + [0]
-        for k in range(len(node_seq_ids) - 1):
-            pair_ids = (node_seq_ids[k], node_seq_ids[k + 1])
-            pair_idxs = (node_seq_idxs[k], node_seq_idxs[k + 1])
-            r_dist += dist.get(pair_idxs, 0)
-            r_dur += edge_dur_cache.get(pair_ids, dur.get(pair_idxs, 0))
-
-        # Stitch geometry
-        geom = []
-        for k in range(len(node_seq_ids) - 1):
-            seg = edge_geom_cache.get((node_seq_ids[k], node_seq_ids[k + 1]))
-            if not seg:
-                n1, n2 = (depot if node_seq_ids[k] == depot.id else node_map[node_seq_ids[k]]), \
-                         (depot if node_seq_ids[k+1] == depot.id else node_map[node_seq_ids[k+1]])
-                seg = [[n1.lat, n1.lng], [n2.lat, n2.lng]]
-            geom.extend(seg if not geom else seg[1:])
+        r_dist = sum(dist.get((node_seq_ids[k], node_seq_ids[k+1]), 0) for k in range(len(node_seq_ids)-1))
+        r_dur = sum(edge_dur_cache.get((node_seq_ids[k], node_seq_ids[k+1]), dur.get((node_seq_ids[k], node_seq_ids[k+1]), 0)) for k in range(len(node_seq_ids)-1))
 
         final_routes.append(Route(
             customers=customer_ids,
@@ -141,7 +131,7 @@ async def solve_with_cplex(request: VRPRequest) -> VRPResponse:
             total_distance=round(r_dist, 2),
             road_distance_km=round(r_dist, 2),
             duration_s=round(r_dur, 1),
-            geometry=geom
+            geometry=stitch_route_geometry(edge_geom_cache, node_seq_ids, node_map)
         ))
         total_road_dist += r_dist
         total_dur_s += r_dur

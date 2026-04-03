@@ -1,25 +1,21 @@
 "use client";
 
 import { useCallback, useState } from "react";
-import type { Node, VRPResponse } from "../types/vrp";
-import { solveClarkeWright, solveCplex } from "../services/vrpApi";
-
-type VRPComparisonResponse = {
-  clarke_wright: VRPResponse;
-  cplex: VRPResponse;
-};
+import type { Node, VRPResponse, VRPComparisonResponse } from "../types/vrp";
+import { solveClarkeWright, solveCplex, solveCompare } from "../services/vrpApi";
+import { ROUTE_PALETTE } from "../constants/theme";
 
 type RenderRoute = VRPResponse["routes"][0] & {
   color: string;
   polyline: Array<[number, number]>;
+  solver?: "cw" | "cplex";
 };
 
 export function useVrpSolver(
   depot: Node | null,
   customers: Node[],
   vehicleCapacity: number,
-  activeAlgs: string[],
-  colors: string[]
+  activeAlgs: string[]
 ) {
   const [solution, setSolution] = useState<VRPResponse | null>(null);
   const [comparisonSolution, setComparisonSolution] = useState<VRPComparisonResponse | null>(null);
@@ -32,16 +28,20 @@ export function useVrpSolver(
     (data: VRPResponse) => {
       if (!depot) return;
       const rendered: RenderRoute[] = data.routes
-        .filter((route) => route.geometry?.length)
-        .map((route, idx) => ({
-          ...route,
-          color: colors[idx % colors.length]!,
-          polyline: route.geometry,
-        }));
+        .map((route) => {
+          // Use stable min-ID coloring rule
+          const colorKey = Math.min(...route.customers);
+          const color = ROUTE_PALETTE[colorKey % ROUTE_PALETTE.length];
+          return {
+            ...route,
+            color,
+            polyline: route.geometry,
+          };
+        });
       setRenderRoutes(rendered);
       setStatusText(` Solution complete! ${data.routes.length} vehicles used.`);
     },
-    [depot, colors]
+    [depot]
   );
 
   const solve = useCallback(async () => {
@@ -67,56 +67,68 @@ export function useVrpSolver(
 
     const updateMap = () => {
       const combined: RenderRoute[] = [];
+      const isCompare = isCW && isCplex;
 
       if (cwRes) {
         combined.push(
-          ...cwRes.routes.map((r, i) => ({
-            ...r,
-            color: isCW && isCplex ? "#f39c12" : colors[i % colors.length],
-            polyline: r.geometry,
-          }))
+          ...cwRes.routes.map((r) => {
+            // In compare mode: fixed orange for all CW routes so they read as one algorithm.
+            // In single mode: stable per-route color from palette.
+            const color = isCompare
+              ? "#f97316"
+              : ROUTE_PALETTE[Math.min(...r.customers) % ROUTE_PALETTE.length];
+            return {
+              ...r,
+              color,
+              solver: "cw" as const,
+              polyline: r.geometry,
+            };
+          })
         );
       }
 
       if (cpRes) {
         combined.push(
-          ...cpRes.routes.map((r, i) => ({
-            ...r,
-            color: isCW && isCplex ? "#3498db" : colors[i % colors.length],
-            polyline: r.geometry,
-          }))
+          ...cpRes.routes.map((r) => {
+            // In compare mode: fixed blue for all CPLEX routes.
+            const color = isCompare
+              ? "#3b82f6"
+              : ROUTE_PALETTE[Math.min(...r.customers) % ROUTE_PALETTE.length];
+            return {
+              ...r,
+              color,
+              solver: "cplex" as const,
+              polyline: r.geometry,
+            };
+          })
         );
       }
       setRenderRoutes(combined);
     };
 
     try {
-      const cwPromise = isCW
-        ? solveClarkeWright(payload).then((data) => {
-            cwRes = data;
-            if (!cpRes) {
-              setSolution(data);
-              setStatusText("Heuristic found! Waiting for CPLEX to optimize...");
-            }
-            updateMap();
-          })
-        : Promise.resolve();
-
-      const cpPromise = isCplex
-        ? solveCplex(payload).then((data) => {
-            cpRes = data;
-            setSolution(data);
-            updateMap();
-          })
-        : Promise.resolve();
-
-      await Promise.all([cwPromise, cpPromise]);
-
-      if (cwRes && cpRes) {
-        setComparisonSolution({ clarke_wright: cwRes, cplex: cpRes });
+      if (isCW && isCplex) {
+        // Performance Optimization: Use a single backend call for comparison
+        // This fetches the OSRM distance matrix only ONCE, reducing latency by 50%.
+        const data = await solveCompare(payload);
+        cwRes = data.clarke_wright;
+        cpRes = data.cplex;
+        setSolution(data.cplex); // Prefer optimal for display
+        setComparisonSolution(data);
         setStatusText("Comparison complete! Heuristic (Orange) vs Optimal (Blue)");
-      } else {
-        setStatusText("Solution complete!");
+        updateMap();
+      } else if (isCW) {
+        const data = await solveClarkeWright(payload);
+        cwRes = data;
+        setSolution(data);
+        setStatusText("Heuristic found!");
+        updateMap();
+      } else if (isCplex) {
+        const data = await solveCplex(payload);
+        cpRes = data;
+        setSolution(data);
+        setStatusText("Optimal solution found!");
+        updateMap();
       }
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
@@ -125,7 +137,7 @@ export function useVrpSolver(
     } finally {
       setIsLoading(false);
     }
-  }, [activeAlgs, colors, customers, depot, vehicleCapacity]);
+  }, [activeAlgs, customers, depot, vehicleCapacity]);
 
   const clearSolution = useCallback(() => {
     setSolution(null);

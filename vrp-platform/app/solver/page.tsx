@@ -3,18 +3,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import type { Node, VRPResponse } from "../types/vrp";
+import type { Node, VRPResponse, VRPComparisonResponse } from "../types/vrp";
 import { ControlPanel } from "../components/solver/ControlPanel";
 import { NodesList } from "../components/solver/NodesList";
 import { SavingsTable } from "../components/solver/SavingsTable";
 import { AlgorithmSteps } from "../components/solver/AlgorithmSteps";
+import { ResultsSummary } from "../components/solver/ResultsSummary";
 import { useVrpSolver, useCsvParser, useMapController } from "../hooks";
-
-// Defining comparison type locally since vrp.ts wasn't updated
-type VRPComparisonResponse = {
-  clarke_wright: VRPResponse;
-  cplex: VRPResponse;
-};
+import { parseVrpCsv } from "../utils/csv";
 
 const MapView = dynamic(() => import("../components/solver/MapView").then((m) => m.MapView), {
   ssr: false,
@@ -40,14 +36,9 @@ export default function SolverPage() {
     setMapData,
   } = useMapController(defaultDemand, (msg) => solver.setStatusText(msg));
 
-  // Colors for routes
-  const colors = useMemo(
-    () => ["#e74c3c", "#3498db", "#2ecc71", "#f39c12", "#9b59b6", "#1abc9c", "#e67e22", "#34495e"],
-    [],
-  );
 
   // VRP solver hook
-  const solver = useVrpSolver(depot, customers, vehicleCapacity as number, activeAlgs, colors);
+  const solver = useVrpSolver(depot, customers, vehicleCapacity as number, activeAlgs);
 
   // CSV parser hook
   const { importFromCsvText, exportToCsv } = useCsvParser(solver.setStatusText);
@@ -255,6 +246,7 @@ export default function SolverPage() {
                     fitToNodesToken={fitToNodesToken}
                     mergeEvents={solver.solution?.merge_events || solver.comparisonSolution?.clarke_wright.merge_events}
                     edgeGeometries={solver.solution?.edge_geometries || solver.comparisonSolution?.clarke_wright.edge_geometries}
+                    isCompareMode={activeAlgs.length === 2}
                   />
                 </div>
               </div>
@@ -291,7 +283,6 @@ export default function SolverPage() {
                         capacity={vehicleCapacity as number}
                         solution={solver.comparisonSolution.clarke_wright}
                         optimalSolution={solver.comparisonSolution.cplex}
-                        colors={colors}
                         error={solver.error}
                       />
                     </div>
@@ -299,7 +290,6 @@ export default function SolverPage() {
                     <ResultsSummary
                       capacity={vehicleCapacity as number}
                       solution={solver.solution}
-                      colors={colors}
                       error={solver.error}
                     />
                   )}
@@ -311,239 +301,4 @@ export default function SolverPage() {
       </div>
     </>
   );
-}
-
-function ResultsSummary({
-  capacity,
-  solution,
-  optimalSolution,
-  colors,
-  error,
-}: {
-  capacity: number;
-  solution: VRPResponse;
-  optimalSolution?: VRPResponse;
-  colors: string[];
-  error: string | null;
-}) {
-  if (error) {
-    return <div className="info-text">{error}</div>;
-  }
-
-  const formatDuration = (s: number) => {
-    const m = Math.floor(s / 60);
-    const sec = Math.round(s % 60);
-    return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
-  };
-
-  const v1 = solution.num_vehicles ?? solution.routes.length;
-  const v2 = optimalSolution ? (optimalSolution.num_vehicles ?? optimalSolution.routes.length) : v1;
-
-  const t1 = solution.computation_time_ms;
-  const t2 = optimalSolution?.computation_time_ms;
-
-  const d1 = solution.total_road_distance_km;
-  const d2 = optimalSolution?.total_road_distance_km;
-
-  const dr1 = solution.total_duration_s;
-  const dr2 = optimalSolution?.total_duration_s;
-
-  const isOptimal = solution.steps?.some(s => s.includes("OPTIMAL")) ?? false;
-
-  const cards = [
-    {
-      label: "Vehicles",
-      value: v1,
-      optValue: optimalSolution ? v2 : undefined,
-      isBetter: optimalSolution ? v2 < v1 : false
-    },
-    {
-      label: "Solve time",
-      value: t1 != null ? `${(t1 / 1000).toFixed(2)} s` : "—",
-      optValue: t2 != null ? `${(t2 / 1000).toFixed(2)} s` : undefined,
-      isBetter: t2 != null && t1 != null ? t2 < t1 : false
-    },
-    {
-      label: "Road dist.",
-      value: d1 != null ? `${d1.toFixed(2)} km` : "—",
-      optValue: d2 != null ? `${d2.toFixed(2)} km` : undefined,
-      isBetter: d2 != null && d1 != null ? d2 < d1 : false
-    },
-    {
-      label: "Total drive time",
-      value: dr1 != null ? formatDuration(dr1) : "—",
-      optValue: dr2 != null ? formatDuration(dr2) : undefined,
-      isBetter: dr2 != null && dr1 != null ? dr2 < dr1 : false
-    },
-    { label: "Vehicle capacity", value: capacity },
-    { label: "Status", value: isOptimal ? "OPTIMAL" : "HEURISTIC", optValue: optimalSolution ? "OPTIMAL" : undefined, highlight: isOptimal },
-  ];
-
-  const renderRoutes = (routes: typeof solution.routes, isOpt: boolean) => (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 mt-2">
-      {routes.map((route, i) => {
-        const utilization = Number.isFinite(capacity) && capacity > 0
-          ? ((route.total_demand / capacity) * 100)
-          : 0;
-        const color = optimalSolution ? (isOpt ? "#3498db" : "#f39c12") : (colors[i % colors.length] ?? "#e8a598");
-
-        return (
-          <div key={i} className="flex flex-col" style={{
-            borderLeft: `4px solid ${color}`,
-            background: "rgba(255,255,255,0.02)",
-            borderRadius: "0 6px 6px 0",
-            padding: "12px 14px",
-          }}>
-            <div style={{ fontWeight: 600, color, marginBottom: "4px" }}>
-              Vehicle {i + 1}
-            </div>
-            <div style={{
-              color: "var(--text-muted, #aaa)",
-              marginBottom: "6px",
-              lineHeight: 1.6,
-              fontSize: "0.78rem",
-              wordBreak: "break-word",
-            }}>
-              Depot → {route.customers.join(" → ")} → Depot
-            </div>
-
-            {/* utilization bar */}
-            <div style={{
-              height: "4px",
-              background: "rgba(255,255,255,0.08)",
-              borderRadius: "2px",
-              marginBottom: "8px",
-              overflow: "hidden",
-            }}>
-              <div style={{
-                height: "100%",
-                width: `${utilization}%`,
-                background: color,
-                borderRadius: "2px",
-              }} />
-            </div>
-
-            <div style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr 1fr",
-              gap: "4px",
-              fontSize: "0.72rem",
-            }}>
-              {[
-                { label: "Load", value: `${route.total_demand}/${capacity} (${utilization.toFixed(0)}%)` },
-                { label: "Road dist.", value: route.road_distance_km != null ? `${route.road_distance_km.toFixed(2)} km` : "—" },
-                { label: "Drive time", value: route.duration_s != null ? formatDuration(route.duration_s) : "—" },
-              ].map(({ label, value }) => (
-                <div key={label} style={{
-                  background: "rgba(255,255,255,0.03)",
-                  border: "1px solid rgba(255,255,255,0.06)",
-                  borderRadius: "4px",
-                  padding: "5px 6px",
-                }}>
-                  <div style={{ color: "var(--text-muted, #777)", marginBottom: "2px", textTransform: "uppercase", letterSpacing: "0.3px", fontSize: "0.65rem" }}>{label}</div>
-                  <div style={{ color: "var(--text, #ddd)", fontWeight: 500 }}>{value}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-
-  return (
-    <div style={{ fontFamily: "inherit", fontSize: "0.82rem" }}>
-
-      {/* ── Summary cards ── */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-3 mb-4">
-        {cards.map(({ label, value, optValue, isBetter, highlight }) => (
-          <div key={label} style={{
-            background: highlight ? "rgba(74, 222, 128, 0.05)" : "rgba(255,255,255,0.04)",
-            border: highlight ? "1px solid rgba(74, 222, 128, 0.2)" : "1px solid rgba(255,255,255,0.08)",
-            borderRadius: "6px",
-            padding: "8px 10px",
-          }}>
-            <div style={{ color: "var(--text-muted, #888)", fontSize: "0.7rem", marginBottom: "3px", textTransform: "uppercase", letterSpacing: "0.5px" }}>{label}</div>
-            <div className="flex items-baseline gap-1.5 flex-wrap">
-              <span style={{ color: highlight ? "#4ade80" : "var(--text, #fff)", fontWeight: 600 }}>{value}</span>
-              {optValue !== undefined && (
-                <span className={isBetter ? "text-green-400 font-bold" : "text-gray-400 font-medium"} style={{ fontSize: "0.7rem", marginLeft: "2px" }}>
-                  {optValue !== value ? `→ ${optValue}` : `(same)`}
-                </span>
-              )}
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* ── Per-route breakdown ── */}
-      {optimalSolution && (
-        <div className="mt-5 mb-1 text-[0.85rem] uppercase tracking-wider font-bold text-[#f39c12]">Clarke-Wright Routes</div>
-      )}
-      {renderRoutes(solution.routes, false)}
-
-      {optimalSolution && (
-        <>
-          <div className="mt-8 mb-1 text-[0.85rem] uppercase tracking-wider font-bold text-[#3498db]">CPLEX Routes (Optimal)</div>
-          {renderRoutes(optimalSolution.routes, true)}
-        </>
-      )}
-    </div>
-  );
-}
-
-function stripVrpCsv(text: string): string {
-  if (!text) return "";
-  let t = text;
-  if (t.charCodeAt(0) === 0xfeff) t = t.slice(1);
-  return t.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
-}
-
-function parseVrpCsv(text: string): {
-  error?: string;
-  depot?: { lat: number; lng: number };
-  customers?: Array<{ lat: number; lng: number; demand: number }>;
-} {
-  const raw = stripVrpCsv(text);
-  if (!raw) return { error: "CSV is empty." };
-  const lines = raw
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0);
-
-  if (lines.length < 2) {
-    return { error: "CSV must have a depot row (lat, lng) and at least one customer row (lat, lng, demand)." };
-  }
-
-  const depotCells = lines[0]!.split(",").map((s) => s.trim());
-  if (depotCells.length !== 2) return { error: "Row 1 (depot) must have exactly 2 columns: lat, lng." };
-
-  const depotLat = Number(depotCells[0]);
-  const depotLng = Number(depotCells[1]);
-  if (!Number.isFinite(depotLat) || !Number.isFinite(depotLng)) {
-    return { error: "Row 1 (depot): lat and lng must be valid numbers." };
-  }
-  if (depotLat < -90 || depotLat > 90 || depotLng < -180 || depotLng > 180) {
-    return { error: "Row 1 (depot): lat must be between -90 and 90, lng between -180 and 180." };
-  }
-
-  const customerRows: Array<{ lat: number; lng: number; demand: number }> = [];
-  for (let i = 1; i < lines.length; i++) {
-    const cells = lines[i]!.split(",").map((s) => s.trim());
-    if (cells.length !== 3) return { error: `Row ${i + 1} must have exactly 3 columns: lat, lng, demand.` };
-
-    const clat = Number(cells[0]);
-    const clng = Number(cells[1]);
-    const demand = Number(cells[2]);
-    if (!Number.isFinite(clat) || !Number.isFinite(clng) || !Number.isFinite(demand)) {
-      return { error: `Row ${i + 1}: lat, lng, and demand must be valid numbers.` };
-    }
-    if (clat < -90 || clat > 90 || clng < -180 || clng > 180) {
-      return { error: `Row ${i + 1}: lat must be between -90 and 90, lng between -180 and 180.` };
-    }
-    if (demand < 0) return { error: `Row ${i + 1}: demand cannot be negative.` };
-    customerRows.push({ lat: clat, lng: clng, demand });
-  }
-
-  return { depot: { lat: depotLat, lng: depotLng }, customers: customerRows };
 }

@@ -1,23 +1,20 @@
 import math
+from collections import deque
 from typing import List, Dict
 from fastapi import HTTPException
 from backend.schemas.vrp import Node, Route, VRPResponse
 from backend.services.osrm import get_osrm_table, get_osrm_route_legs
+from backend.services.utils import haversine_distance, process_osrm_table, stitch_route_geometry
 import asyncio
 import time
 
 
-def calculate_distance(node1: Node, node2: Node) -> float:
-    """Haversine distance in km."""
-    R = 6371
-    lat1_rad, lat2_rad = math.radians(node1.lat), math.radians(node2.lat)
-    delta_lat, delta_lng = math.radians(node2.lat - node1.lat), math.radians(node2.lng - node1.lng)
-    a = (math.sin(delta_lat / 2) ** 2 +
-         math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(delta_lng / 2) ** 2)
-    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-
-async def clarke_wright_algorithm(nodes: List[Node], depot_id: int, capacity: float) -> VRPResponse:
+async def clarke_wright_algorithm(
+    nodes: List[Node], 
+    depot_id: int, 
+    capacity: float, 
+    precomputed_table: dict = None
+) -> VRPResponse:
     start_time = time.perf_counter()
     steps = []
     merge_events = []
@@ -33,67 +30,97 @@ async def clarke_wright_algorithm(nodes: List[Node], depot_id: int, capacity: fl
 
     node_map = {n.id: n for n in nodes}
 
-    # ── Step 1: Haversine Table ──
-    h_dist: dict[tuple, float] = {}
-    for ni in nodes:
-        for nj in nodes:
-            if ni.id != nj.id:
-                h_dist[(ni.id, nj.id)] = calculate_distance(ni, nj)
+    # ── Step 0: Fetch Real Road Distances (OSRM Table) ──
+    if precomputed_table:
+        osrm_table_res = precomputed_table
+    else:
+        osrm_table_res = await get_osrm_table([(n.lat, n.lng) for n in nodes])
+    
+    road_dist, road_dur = process_osrm_table(osrm_table_res, nodes)
 
-    # ── Step 2-6: Merge Algorithm ──
+    # ── Step 1: Savings Calculation (using Road Distances) ──
     savings = []
     for i in range(len(customers)):
         for j in range(i + 1, len(customers)):
             c1, c2 = customers[i], customers[j]
-            s = (h_dist[(depot.id, c1.id)] + h_dist[(depot.id, c2.id)] - h_dist[(c1.id, c2.id)])
+            # Savings formula: s(i,j) = d(depot,i) + d(depot,j) - d(i,j)
+            s = (road_dist[(depot.id, c1.id)] + road_dist[(depot.id, c2.id)] - road_dist[(c1.id, c2.id)])
             savings.append({'i': c1.id, 'j': c2.id, 'saving': round(s, 2)})
 
     savings.sort(key=lambda x: x['saving'], reverse=True)
     
-    route_map: dict[int, list] = {idx: [c.id] for idx, c in enumerate(customers)}
+    # ── Step 2-6: Merge Algorithm ──
+    # Use deques so all four merge orientations are in-place O(len) extensions —
+    # no new list objects created per merge, no [::-1] reversal copies.
+    route_map: dict[int, deque] = {idx: deque([c.id]) for idx, c in enumerate(customers)}
     demand_map: dict[int, float] = {idx: c.demand for idx, c in enumerate(customers)}
     endpoints: dict[int, int] = {c.id: idx for idx, c in enumerate(customers)}
     next_id = len(customers)
+    merge_count = 0
 
-    merge_events.append({"i": -1, "j": -1, "routes": [l.copy() for l in route_map.values()]})
+    # Compute throttle once outside the hot loop — no reason to recompute every iteration
+    throttle = 1 if len(nodes) < 25 else (5 if len(nodes) < 100 else 10)
+
+    merge_events.append({"i": -1, "j": -1, "routes": [list(l) for l in route_map.values()]})
 
     for sv in savings:
         i, j = sv['i'], sv['j']
         r_i, r_j = endpoints.get(i), endpoints.get(j)
         if r_i is not None and r_j is not None and r_i != r_j:
+            # O(1) demand check
             if demand_map[r_i] + demand_map[r_j] <= capacity:
                 l_i, l_j = route_map[r_i], route_map[r_j]
                 pos_i = 0 if l_i[0] == i else -1
                 pos_j = 0 if l_j[0] == j else -1
-                
-                if pos_i == -1 and pos_j == 0: nl = l_i + l_j
-                elif pos_i == 0 and pos_j == -1: nl = l_j + l_i
-                elif pos_i == -1 and pos_j == -1: nl = l_i + l_j[::-1]
-                else: nl = l_i[::-1] + l_j
 
+                # All four cases use in-place deque operations — zero allocation, no copies
+                if pos_i == -1 and pos_j == 0:
+                    # tail(l_i) → head(l_j): extend l_i with l_j in order
+                    l_i.extend(l_j)
+                    nl = l_i
+                elif pos_i == 0 and pos_j == -1:
+                    # head(l_i) → tail(l_j): extend l_j with l_i in order
+                    l_j.extend(l_i)
+                    nl = l_j
+                elif pos_i == -1 and pos_j == -1:
+                    # tail(l_i) → tail(l_j): extend l_i with reversed l_j
+                    # reversed() is a lazy iterator — no copy of l_j is made
+                    l_i.extend(reversed(l_j))
+                    nl = l_i
+                else:
+                    # head(l_i) → head(l_j): prepend reversed(l_i) to l_j
+                    # deque.extendleft(iterable) prepends each element in order,
+                    # which is equivalent to prepending the reversed iterable
+                    l_j.extendleft(l_i)
+                    nl = l_j
+
+                # Update state
+                new_demand = demand_map[r_i] + demand_map[r_j]
                 del route_map[r_i]; del route_map[r_j]
                 del demand_map[r_i]; del demand_map[r_j]
                 if i in endpoints: del endpoints[i]
                 if j in endpoints: del endpoints[j]
 
                 route_map[next_id] = nl
-                demand_map[next_id] = sum(node_map[cid].demand for cid in nl)
+                demand_map[next_id] = new_demand
                 endpoints[nl[0]] = next_id
                 endpoints[nl[-1]] = next_id
                 next_id += 1
-                merge_events.append({"i": i, "j": j, "routes": [l.copy() for l in route_map.values()]})
+                
+                # Fixed throttle: count actual merges, not total event list length
+                merge_count += 1
+                if merge_count % throttle == 0:
+                    merge_events.append({"i": i, "j": j, "routes": [list(l) for l in route_map.values()]})
+                
                 steps.append(f"Merged {i} and {j}")
 
-    # ── Step 7: Parallel OSRM fetch ──
-    osrm_table_res: dict = {}
+    # ── Step 7: Parallel OSRM Geometry Fetch ──
+    # We only fetch geometries for the final routes.
     edge_geom_cache: dict[tuple, list] = {}
     edge_dur_cache: dict[tuple, float] = {}
 
-    async def fetch_table():
-        res = await get_osrm_table([(n.lat, n.lng) for n in nodes])
-        osrm_table_res.update(res)
-
-    async def fetch_legs(r_list: list):
+    async def fetch_legs(r_deque: deque):
+        r_list = list(r_deque)
         wp = [(depot.lat, depot.lng)] + [(node_map[cid].lat, node_map[cid].lng) for cid in r_list] + [(depot.lat, depot.lng)]
         legs_data = await get_osrm_route_legs(wp)
         node_seq = [depot.id] + r_list + [depot.id]
@@ -103,52 +130,17 @@ async def clarke_wright_algorithm(nodes: List[Node], depot_id: int, capacity: fl
             edge_dur_cache[(u, v)] = leg_dict["duration"]
 
     t2 = time.perf_counter()
-    await asyncio.gather(fetch_table(), *[fetch_legs(rl) for rl in route_map.values()])
-    print(f"[CW TIMING] parallel_fetch={time.perf_counter()-t2:.2f}s")
-
-    # Final reporting distances/durations from table
-    dist_table = osrm_table_res.get("distances", [])
-    dur_table = osrm_table_res.get("durations", [])
-    osrm_ok = osrm_table_res.get("ok") and dist_table
-    
-    road_dist: dict[tuple, float] = {}
-    road_dur: dict[tuple, float] = {}
-    
-    if osrm_ok:
-        for i, ni in enumerate(nodes):
-            for j, nj in enumerate(nodes):
-                if ni.id != nj.id:
-                    d = dist_table[i][j] if i < len(dist_table) and j < len(dist_table[i]) else -1
-                    t = dur_table[i][j] if i < len(dur_table) and j < len(dur_table[i]) else -1
-                    road_dist[(ni.id, nj.id)] = d if d >= 0 else h_dist[(ni.id, nj.id)]
-                    road_dur[(ni.id, nj.id)] = t if t >= 0 else 0
-    else:
-        road_dist = h_dist
-        road_dur = {k: 0 for k in h_dist.keys()}
-
-    def stitch(r_list: list) -> list:
-        geom = []
-        node_seq = [depot.id] + r_list + [depot.id]
-        for k in range(len(node_seq) - 1):
-            seg = edge_geom_cache.get((node_seq[k], node_seq[k + 1]))
-            if not seg:
-                n1, n2 = node_map[node_seq[k]], node_map[node_seq[k + 1]]
-                seg = [[n1.lat, n1.lng], [n2.lat, n2.lng]]
-            geom.extend(seg if not geom else seg[1:])
-        return geom
+    await asyncio.gather(*[fetch_legs(rl) for rl in route_map.values()])
+    print(f"[CW TIMING] parallel_legs_fetch={time.perf_counter()-t2:.2f}s")
 
     final_routes = []
     total_road_dist = 0
     total_dur_s = 0
-    for r_id, r_list in route_map.items():
-        # Duration: sum specific legs fetched for this final route
-        r_dur = 0
-        r_dist = 0
+    for r_id, r_deque in route_map.items():
+        r_list = list(r_deque)
         node_seq = [depot.id] + r_list + [depot.id]
-        for k in range(len(node_seq) - 1):
-            pair = (node_seq[k], node_seq[k+1])
-            r_dist += road_dist.get(pair, 0)
-            r_dur += edge_dur_cache.get(pair, road_dur.get(pair, 0))
+        r_dist = sum(road_dist.get((node_seq[k], node_seq[k+1]), 0) for k in range(len(node_seq)-1))
+        r_dur = sum(edge_dur_cache.get((node_seq[k], node_seq[k+1]), road_dur.get((node_seq[k], node_seq[k+1]), 0)) for k in range(len(node_seq)-1))
 
         fr = Route(
             customers=r_list,
@@ -156,7 +148,7 @@ async def clarke_wright_algorithm(nodes: List[Node], depot_id: int, capacity: fl
             total_distance=round(r_dist, 2),
             road_distance_km=round(r_dist, 2),
             duration_s=round(r_dur, 1),
-            geometry=stitch(r_list)
+            geometry=stitch_route_geometry(edge_geom_cache, node_seq, node_map)
         )
         final_routes.append(fr)
         total_road_dist += r_dist
