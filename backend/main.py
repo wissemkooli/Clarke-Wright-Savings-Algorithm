@@ -4,7 +4,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from backend import models
 from backend.database import engine
-from backend.routers import solver, results, predictions
+from backend.api.routes import solve
+from backend.routers import results, predictions
 
 
 logger = logging.getLogger(__name__)
@@ -32,7 +33,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(solver.router)
+app.include_router(solve.router)
 app.include_router(results.router)
 app.include_router(predictions.router)
 
