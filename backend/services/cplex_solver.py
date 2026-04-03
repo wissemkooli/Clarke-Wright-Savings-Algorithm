@@ -28,6 +28,13 @@ async def solve_with_cplex(request: VRPRequest, precomputed_table: dict = None) 
     all_nodes = [depot] + customers
     N = len(all_nodes)
 
+    max_demand = max((c.demand for c in customers), default=0)
+    if Q <= 0 or max_demand > Q:
+        return VRPResponse(
+            routes=[], total_distance=0, savings_table=[],
+            steps=[f"CPLEX Error: Max demand ({max_demand}) exceeds vehicle capacity ({Q})."]
+        )
+
     # ── Step 1: OSRM distance & duration matrix ──
     if precomputed_table:
         table_res = precomputed_table
@@ -48,7 +55,14 @@ async def solve_with_cplex(request: VRPRequest, precomputed_table: dict = None) 
     f = {(i, j): mdl.continuous_var(lb=0, ub=Q, name=f"f_{i}_{j}") for i in range(N) for j in range(N) if i != j}
 
     mdl.minimize(mdl.sum(dist_idx[i, j] * x[i, j] for i, j in x))
+    
+    import math
+    total_demand = sum(c.demand for c in customers)
+    m_min = math.ceil(total_demand / Q) if Q > 0 else 1
+    
+    mdl.add_constraint(mdl.sum(x[0, j] for j in range(1, N)) >= m_min)
     mdl.add_constraint(mdl.sum(x[0, j] for j in range(1, N)) <= m)
+    mdl.add_constraint(mdl.sum(x[i, 0] for i in range(1, N)) >= m_min)
     mdl.add_constraint(mdl.sum(x[i, 0] for i in range(1, N)) <= m)
 
     for i in range(1, N):
@@ -61,9 +75,20 @@ async def solve_with_cplex(request: VRPRequest, precomputed_table: dict = None) 
         )
 
     for i, j in x:
-        mdl.add_constraint(f[i, j] <= Q * x[i, j])
+        if j == 0:
+            mdl.add_constraint(f[i, 0] == 0)
+        else:
+            if i == 0:
+                mdl.add_constraint(f[0, j] <= Q * x[0, j])
+            else:
+                mdl.add_constraint(f[i, j] <= (Q - all_nodes[i].demand) * x[i, j])
+            mdl.add_constraint(f[i, j] >= all_nodes[j].demand * x[i, j])
 
-    mdl.parameters.timelimit = 30
+    # Optimize for finding feasible solutions quickly on larger instances
+    mdl.parameters.emphasis.mip = 1
+    
+    # We MUST impose a time limit, otherwise N=20+ takes hours and the web request times out (yielding no output).
+    mdl.parameters.timelimit = 15
 
     # ── Run solve in thread pool — unblocks the asyncio event loop ──
     # Without this, mdl.solve() holds the GIL and freezes all coroutines,
@@ -74,7 +99,10 @@ async def solve_with_cplex(request: VRPRequest, precomputed_table: dict = None) 
     )
 
     if solution is None:
-        raise Exception("CPLEX found no solution")
+        return VRPResponse(
+            routes=[], total_distance=0, savings_table=[],
+            steps=["CPLEX Error: No feasible solution found within the 15-second time limit, or the constraints are too tight."]
+        )
 
     # ── Step 3: Extract routes ──
     # Build a O(1) successor dict instead of scanning all arcs on every step.

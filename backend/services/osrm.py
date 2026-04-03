@@ -1,33 +1,20 @@
 import httpx
 import asyncio
-import random
 
-OSRM_BASE = "https://router.project-osrm.org"
+OSRM_BASE = "http://localhost:5000"
 
 # ─── Shared persistent client ────────────────────────────────────────────────
-_limits = httpx.Limits(max_keepalive_connections=25, max_connections=30, keepalive_expiry=30)
-_http_client = httpx.AsyncClient(timeout=8.0, limits=_limits)
-_SEM = asyncio.Semaphore(6)
+_limits = httpx.Limits(max_keepalive_connections=50, max_connections=50, keepalive_expiry=30)
+_http_client = httpx.AsyncClient(timeout=3.0, limits=_limits)
 
 
 async def _get(url: str) -> httpx.Response | None:
-    """GET with retry and staggered jitter."""
-    _429_hits = 0
-    await asyncio.sleep(random.uniform(0, 0.15))
-    for attempt in range(4):
+    """GET with retry."""
+    for _ in range(2):
         try:
-            async with _SEM:
-                resp = await _http_client.get(url)
+            return await _http_client.get(url)
         except Exception:
-            await asyncio.sleep(0.3 * (attempt + 1))
-            continue
-        if resp.status_code == 429:
-            _429_hits += 1
-            await asyncio.sleep(1.0 * (attempt + 1))
-            continue
-        if _429_hits:
-            print(f"[OSRM] {_429_hits}x 429 on {url[-60:]}")
-        return resp
+            pass
     return None
 
 
@@ -63,24 +50,15 @@ async def get_osrm_route_legs(waypoints: list[tuple[float, float]]) -> list[dict
     url = f"{OSRM_BASE}/route/v1/driving/{coords}?overview=full&geometries=geojson&steps=true"
     resp = await _get(url)
     
-    # Fallback to straight lines if network fails
-    fallback = []
-    for i in range(len(waypoints) - 1):
-        p1, p2 = waypoints[i], waypoints[i+1]
-        fallback.append({
-            "geometry": [[p1[0], p1[1]], [p2[0], p2[1]]],
-            "distance": 0, "duration": 0
-        })
-
     if resp is None or not resp.is_success:
-        return fallback
+        return []
     data = resp.json()
     route = (data.get("routes") or [None])[0]
     if data.get("code") != "Ok" or not route:
-        return fallback
+        return []
 
     legs_out = []
-    for i, leg in enumerate(route.get("legs", [])):
+    for leg in route.get("legs", []):
         # Correctly extract coordinates from individual steps
         pts = []
         for step in leg.get("steps", []):
@@ -91,8 +69,8 @@ async def get_osrm_route_legs(waypoints: list[tuple[float, float]]) -> list[dict
                     pts.append(p)
 
         legs_out.append({
-            "geometry": pts if pts else fallback[i]["geometry"],
+            "geometry": pts,
             "distance": leg.get("distance", 0),
             "duration": leg.get("duration", 0)
         })
-    return legs_out
+    return legs_out

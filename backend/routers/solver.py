@@ -5,6 +5,11 @@ from backend.services.cplex_solver import solve_with_cplex
 from backend.services.osrm import get_osrm_table
 import time
 import asyncio
+from backend.schemas.mdvrp import MDVRPRequest, MDVRPResponse
+from backend.services.clarke_wright_mdvrp import clarke_wright_mdvrp
+
+
+
 
 router = APIRouter(prefix="/api/solve", tags=["solver"])
 
@@ -15,6 +20,13 @@ async def solve_clarke_wright(request: VRPRequest):
 @router.post("/cplex")
 async def solve_cplex(request: VRPRequest):
     return await solve_with_cplex(request)
+
+@router.post("/clarke-wright/multi-depot", response_model=MDVRPResponse)
+async def solve_mdvrp(request: MDVRPRequest):
+    return await clarke_wright_mdvrp(request)
+
+
+
 
 
 @router.post("/compare")
@@ -43,3 +55,5 @@ async def solve_compare(request: VRPRequest):
         "clarke_wright": cw,
         "cplex": cplex,
     }
+
+
